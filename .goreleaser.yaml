@@ -65,8 +65,13 @@ homebrew_casks:
     repository:
       owner: upstacked
       name: homebrew-tools
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      # Falls back to an empty string so a release without the tap secret
+      # still publishes binaries instead of failing outright. skip_upload
+      # below turns the cask push into a no-op in that case.
+      token: "{{ envOrDefault \"HOMEBREW_TAP_TOKEN\" \"\" }}"
     directory: Casks
+    # Publish the cask only when a tap token is available.
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_TOKEN" "") "" }}true{{ else }}false{{ end }}' 
     homepage: https://github.com/upstacked/cli
     description: Operate Upstacked infrastructure from the terminal
     license: MIT
