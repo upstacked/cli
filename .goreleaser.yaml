@@ -65,13 +65,11 @@ homebrew_casks:
     repository:
       owner: upstacked
       name: homebrew-tools
-      # `index .Env` yields "" for a key that is not set, where
-      # `.Env.HOMEBREW_TAP_TOKEN` would error. A release without the tap
-      # secret must still publish binaries rather than fail outright.
-      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}' 
+      # goreleaser requires this field to be exactly {{ .Env.VAR }} - any
+      # other interpolation is rejected, and only at publish time. To release
+      # without a tap token, pass --skip=homebrew rather than templating here.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Casks
-    # Publish the cask only when a tap token is available.
-    skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}false{{ else }}true{{ end }}' 
     homepage: https://github.com/upstacked/cli
     description: Operate Upstacked infrastructure from the terminal
     license: MIT

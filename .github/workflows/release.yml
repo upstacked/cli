@@ -43,16 +43,20 @@ jobs:
           owner: upstacked
           repositories: homebrew-tools
 
+      # goreleaser insists the cask token field be exactly {{ .Env.VAR }}, so
+      # a missing tap token cannot be handled inside the config. The decision
+      # is made here instead: without the App, skip the cask and still publish
+      # binaries.
       - name: Release
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --clean
+          args: >-
+            release --clean
+            ${{ env.TAP_APP_ID == '' && '--skip=homebrew' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Always defined, empty when the App secrets are absent, so the
-          # cask template resolves either way.
-          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token || '' }}
+          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
 
       - name: Report tap status
         if: env.TAP_APP_ID == ''

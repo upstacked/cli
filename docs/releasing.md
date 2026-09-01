@@ -19,6 +19,14 @@ To rehearse without publishing anything:
 goreleaser release --snapshot --clean --skip=publish
 ```
 
+A rehearsal cannot catch everything. GoReleaser validates the cask's `token`
+field only during a real publish, so neither `goreleaser check` nor a snapshot
+will tell you it is malformed. Releasing from a throwaway tag is the only way
+to exercise that path.
+
+Running a real release locally without a tap token needs `--skip=homebrew`;
+otherwise the cask step fails on the missing environment variable.
+
 ## Homebrew tap credentials
 
 The workflow's `GITHUB_TOKEN` is scoped to `upstacked/cli`, so it cannot push
