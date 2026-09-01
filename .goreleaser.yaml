@@ -1,0 +1,110 @@
+version: 2
+project_name: ups
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+    # Completion scripts are generated from the real command tree and shipped
+    # in the archive. A cask's *_completion stanzas reference files inside the
+    # artifact, so they have to exist before archiving.
+    - mkdir -p completions
+    - sh -c 'go run ./cmd/ups completion bash > completions/ups.bash'
+    - sh -c 'go run ./cmd/ups completion zsh  > completions/_ups'
+    - sh -c 'go run ./cmd/ups completion fish > completions/ups.fish' 
+
+builds:
+  - id: ups
+    main: ./cmd/ups
+    binary: ups
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X github.com/upstacked/cli/internal/cli.Version={{.Version}}
+      - -X github.com/upstacked/cli/internal/api.Version={{.Version}}
+
+archives:
+  - id: default
+    ids: [ups]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE*
+      - src: completions/*
+        dst: completions
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# goreleaser v2 publishes CLI binaries as Homebrew casks; `brews` is
+# deprecated. The install line is unchanged:
+#   brew install upstacked/tools/cli
+homebrew_casks:
+  - name: cli
+    binaries: [ups]
+    repository:
+      owner: upstacked
+      name: homebrew-tools
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/upstacked/cli
+    description: Operate Upstacked infrastructure from the terminal
+    license: MIT
+    commit_author:
+      name: upstacked-bot
+      email: bot@upstacked.io
+    # Shell completion is a first-class requirement, so it is installed with
+    # the binary rather than left to the user to wire up.
+    completions:
+      bash: completions/ups.bash
+      zsh: completions/_ups
+      fish: completions/ups.fish
+    hooks:
+      post:
+        # Downloaded binaries are quarantined by Gatekeeper on macOS, which
+        # makes the first run fail with an unhelpful dialog.
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/ups"]
+          end
+
+release:
+  github:
+    owner: upstacked
+    name: cli
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```sh
+    brew install upstacked/tools/cli
+    ```
+
+    Then:
+
+    ```sh
+    ups init --api-url <your-server>
+    ups doctor
+    ```
