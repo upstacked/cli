@@ -15,6 +15,7 @@ func newInitCmd(app *App) *cobra.Command {
 		apiURL      string
 		username    string
 		scope       string
+		agentsRaw   string
 		skillOnly   bool
 		noSkill     bool
 		nonInteract bool
@@ -38,7 +39,7 @@ safe: steps that are already done are reported and skipped.`,
 			interactive := app.Interactive() && !nonInteract
 
 			if skillOnly {
-				return installSkillStep(app, scope, force)
+				return installSkillStep(app, scope, agentsRaw, force)
 			}
 
 			fmt.Fprintf(app.Stderr, "\n%s\n", t.Bold.Apply("Setting up the Upstacked CLI"))
@@ -126,7 +127,7 @@ safe: steps that are already done are reported and skipped.`,
 
 			// Step 4: agent skill.
 			if !noSkill {
-				if err := installSkillStep(app, scope, force); err != nil {
+				if err := installSkillStep(app, scope, agentsRaw, force); err != nil {
 					// A skill conflict must not fail the whole setup.
 					if errs.CodeOf(err) == errs.CodeConflict {
 						fmt.Fprintf(app.Stderr, " %s %v\n", t.Yellow.Apply(sym.Warn), err)
@@ -148,17 +149,25 @@ safe: steps that are already done are reported and skipped.`,
 	c.Flags().BoolVar(&noSkill, "no-skill", false, "skip installing the agent skill")
 	c.Flags().BoolVar(&nonInteract, "non-interactive", false, "never prompt; fail instead")
 	c.Flags().BoolVar(&force, "force", false, "overwrite local edits to the installed skill")
+	c.Flags().StringVar(&agentsRaw, "agent", "popular",
+		"skill install target: popular|all|claude|cursor|codex|gemini or comma-separated list")
 	scopeFlag(c, &scope)
 	return c
 }
 
-func installSkillStep(app *App, scope string, force bool) error {
+func installSkillStep(app *App, scope, agentsRaw string, force bool) error {
 	t, sym := app.Theme(), app.Sym()
-	st, err := skill.Install(skill.Scope(scope), "", Version, force)
+	agents, err := skill.ParseAgents(agentsRaw)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(app.Stderr, " %s agent skill %s\n", t.Green.Apply(sym.OK), st.Path)
+	states, err := skill.InstallMany(skill.Scope(scope), "", Version, force, agents)
+	if err != nil {
+		return err
+	}
+	for _, st := range states {
+		fmt.Fprintf(app.Stderr, " %s %s skill %s\n", t.Green.Apply(sym.OK), st.Agent, st.Path)
+	}
 	return nil
 }
 

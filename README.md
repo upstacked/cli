@@ -107,7 +107,8 @@ safeguard working; run `ups login` against the new host.
 ## The agent skill
 
 The binary embeds an LLM skill and installs it with `ups skill install`
-(`~/.claude/skills/upstacked/`, or `--scope project`). It explains the resource
+(by default to popular agents: Claude, Cursor, Codex and Gemini, under
+`~/.<agent>/skills/upstacked/`, or `--scope project`). It explains the resource
 model and, more importantly, *why* the workflows are shaped as they are — an
 agent can read `--help` for the how, but cannot derive from any API response
 that deleted monitoring fails silently.

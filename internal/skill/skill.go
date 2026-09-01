@@ -26,13 +26,25 @@ var Content string
 // Name is the skill directory name and the agent-facing skill name.
 const Name = "upstacked"
 
+// Agent is a CLI agent that can load skills from a skills directory.
+type Agent string
+
+const (
+	AgentClaude Agent = "claude"
+	AgentCursor Agent = "cursor"
+	AgentCodex  Agent = "codex"
+	AgentGemini Agent = "gemini"
+)
+
+var popularAgents = []Agent{AgentClaude, AgentCursor, AgentCodex, AgentGemini}
+
 // Scope decides where the skill is installed.
 type Scope string
 
 const (
-	// ScopeUser installs to ~/.claude/skills, available in every project.
+	// ScopeUser installs to ~/.<agent>/skills, available in every project.
 	ScopeUser Scope = "user"
-	// ScopeProject installs to ./.claude/skills, committed with the repo.
+	// ScopeProject installs to ./.<agent>/skills, committed with the repo.
 	ScopeProject Scope = "project"
 )
 
@@ -53,8 +65,47 @@ func Checksum(s string) string {
 // EmbeddedChecksum is the hash of the skill this binary ships.
 func EmbeddedChecksum() string { return Checksum(Content) }
 
+// PopularAgents lists the default install targets.
+func PopularAgents() []Agent {
+	out := make([]Agent, len(popularAgents))
+	copy(out, popularAgents)
+	return out
+}
+
+// ParseAgents parses --agent values.
+func ParseAgents(v string) ([]Agent, error) {
+	raw := strings.TrimSpace(strings.ToLower(v))
+	if raw == "" || raw == "popular" || raw == "all" {
+		return PopularAgents(), nil
+	}
+	seen := map[Agent]bool{}
+	var out []Agent
+	for _, part := range strings.Split(raw, ",") {
+		a := Agent(strings.TrimSpace(part))
+		switch a {
+		case AgentClaude, AgentCursor, AgentCodex, AgentGemini:
+			if !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		default:
+			return nil, errs.Usage("unknown agent %q", part).
+				WithHint("use --agent popular,claude,cursor,codex,gemini")
+		}
+	}
+	if len(out) == 0 {
+		return nil, errs.Usage("no agent selected").WithHint("use --agent popular")
+	}
+	return out, nil
+}
+
 // Dir returns the install directory for a scope.
 func Dir(scope Scope, projectRoot string) (string, error) {
+	return DirForAgent(scope, projectRoot, AgentClaude)
+}
+
+// DirForAgent returns the install directory for one agent and scope.
+func DirForAgent(scope Scope, projectRoot string, agent Agent) (string, error) {
 	switch scope {
 	case ScopeProject:
 		if projectRoot == "" {
@@ -64,13 +115,13 @@ func Dir(scope Scope, projectRoot string) (string, error) {
 			}
 			projectRoot = wd
 		}
-		return filepath.Join(projectRoot, ".claude", "skills", Name), nil
+		return filepath.Join(projectRoot, "."+string(agent), "skills", Name), nil
 	case ScopeUser, "":
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", errs.General("cannot determine home directory").Wrapping(err)
 		}
-		return filepath.Join(home, ".claude", "skills", Name), nil
+		return filepath.Join(home, "."+string(agent), "skills", Name), nil
 	default:
 		return "", errs.Usage("unknown scope %q", scope).WithHint("use --scope user or --scope project")
 	}
@@ -78,6 +129,7 @@ func Dir(scope Scope, projectRoot string) (string, error) {
 
 // State describes an installation.
 type State struct {
+	Agent     Agent
 	Dir       string
 	Path      string
 	Installed bool
@@ -94,11 +146,16 @@ type State struct {
 
 // Inspect reports the installation state without changing anything.
 func Inspect(scope Scope, projectRoot, version string) (*State, error) {
-	dir, err := Dir(scope, projectRoot)
+	return InspectAgent(scope, projectRoot, version, AgentClaude)
+}
+
+// InspectAgent reports the installation state for one target agent.
+func InspectAgent(scope Scope, projectRoot, version string, agent Agent) (*State, error) {
+	dir, err := DirForAgent(scope, projectRoot, agent)
 	if err != nil {
 		return nil, err
 	}
-	st := &State{Dir: dir, Path: filepath.Join(dir, "SKILL.md"), ExpectedChecksm: EmbeddedChecksum()}
+	st := &State{Agent: agent, Dir: dir, Path: filepath.Join(dir, "SKILL.md"), ExpectedChecksm: EmbeddedChecksum()}
 
 	b, err := os.ReadFile(st.Path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -127,7 +184,28 @@ func Inspect(scope Scope, projectRoot, version string) (*State, error) {
 // Install writes the skill. It refuses to overwrite local edits unless forced,
 // because silently discarding a user's customisation is worse than a failure.
 func Install(scope Scope, projectRoot, version string, force bool) (*State, error) {
-	st, err := Inspect(scope, projectRoot, version)
+	return InstallAgent(scope, projectRoot, version, force, AgentClaude)
+}
+
+// InstallMany installs the skill into each selected agent directory.
+func InstallMany(scope Scope, projectRoot, version string, force bool, agents []Agent) ([]*State, error) {
+	if len(agents) == 0 {
+		agents = PopularAgents()
+	}
+	out := make([]*State, 0, len(agents))
+	for _, a := range agents {
+		st, err := InstallAgent(scope, projectRoot, version, force, a)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, st)
+	}
+	return out, nil
+}
+
+// InstallAgent writes one skill install target.
+func InstallAgent(scope Scope, projectRoot, version string, force bool, agent Agent) (*State, error) {
+	st, err := InspectAgent(scope, projectRoot, version, agent)
 	if err != nil {
 		return nil, err
 	}
@@ -147,12 +225,17 @@ func Install(scope Scope, projectRoot, version string, force bool) (*State, erro
 	if err := writeManifest(st.Dir, &Manifest{Version: version, Checksum: EmbeddedChecksum()}); err != nil {
 		return nil, err
 	}
-	return Inspect(scope, projectRoot, version)
+	return InspectAgent(scope, projectRoot, version, agent)
 }
 
 // Uninstall removes an installed skill.
 func Uninstall(scope Scope, projectRoot string) (string, error) {
-	dir, err := Dir(scope, projectRoot)
+	return UninstallAgent(scope, projectRoot, AgentClaude)
+}
+
+// UninstallAgent removes one installed skill target.
+func UninstallAgent(scope Scope, projectRoot string, agent Agent) (string, error) {
+	dir, err := DirForAgent(scope, projectRoot, agent)
 	if err != nil {
 		return "", err
 	}

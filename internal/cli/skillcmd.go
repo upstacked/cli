@@ -26,7 +26,7 @@ reports drift.`,
 
 func scopeFlag(cmd *cobra.Command, target *string) {
 	cmd.Flags().StringVar(target, "scope", "user",
-		"where to install: user (~/.claude/skills) or project (./.claude/skills)")
+		"where to install: user (~/.<agent>/skills) or project (./.<agent>/skills)")
 	_ = cmd.RegisterFlagCompletionFunc("scope", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{"user", "project"}, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -35,21 +35,34 @@ func scopeFlag(cmd *cobra.Command, target *string) {
 func newSkillInstallCmd(app *App) *cobra.Command {
 	var scope string
 	var force bool
+	var agentsRaw string
 	c := &cobra.Command{
 		Use:   "install",
 		Short: "Install or update the agent skill",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := skill.Install(skill.Scope(scope), "", Version, force)
+			agents, err := skill.ParseAgents(agentsRaw)
+			if err != nil {
+				return err
+			}
+			installed, err := skill.InstallMany(skill.Scope(scope), "", Version, force, agents)
 			if err != nil {
 				return err
 			}
 			t, sym := app.Theme(), app.Sym()
-			fmt.Fprintf(app.Stderr, "%s Skill installed at %s\n", t.Green.Apply(sym.OK), st.Path)
+			for _, st := range installed {
+				fmt.Fprintf(app.Stderr, "%s %s skill installed at %s\n",
+					t.Green.Apply(sym.OK), st.Agent, st.Path)
+			}
 			return nil
 		},
 	}
 	scopeFlag(c, &scope)
+	c.Flags().StringVar(&agentsRaw, "agent", "popular",
+		"install target: popular|all|claude|cursor|codex|gemini or comma-separated list")
 	c.Flags().BoolVar(&force, "force", false, "overwrite local edits to the installed skill")
+	_ = c.RegisterFlagCompletionFunc("agent", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{"popular", "all", "claude", "cursor", "codex", "gemini"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	return c
 }
 
