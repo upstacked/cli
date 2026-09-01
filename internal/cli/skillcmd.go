@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/upstacked/cli/internal/errs"
@@ -26,7 +27,7 @@ reports drift.`,
 
 func scopeFlag(cmd *cobra.Command, target *string) {
 	cmd.Flags().StringVar(target, "scope", "user",
-		"where to install: user (~/.claude/skills) or project (./.claude/skills)")
+		"where to install: user (~/.<agent>/skills) or project (./.<agent>/skills)")
 	_ = cmd.RegisterFlagCompletionFunc("scope", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{"user", "project"}, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -35,22 +36,54 @@ func scopeFlag(cmd *cobra.Command, target *string) {
 func newSkillInstallCmd(app *App) *cobra.Command {
 	var scope string
 	var force bool
+	var agentsRaw string
 	c := &cobra.Command{
 		Use:   "install",
 		Short: "Install or update the agent skill",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := skill.Install(skill.Scope(scope), "", Version, force)
+			resolvedRaw, err := resolveAgentsRaw(agentsRaw, cmd.Flags().Changed("agent"), app.Interactive(), app.Prompt)
+			if err != nil {
+				return err
+			}
+			agents, err := skill.ParseAgents(resolvedRaw)
+			if err != nil {
+				return err
+			}
+			installed, err := skill.InstallMany(skill.Scope(scope), "", Version, force, agents)
 			if err != nil {
 				return err
 			}
 			t, sym := app.Theme(), app.Sym()
-			fmt.Fprintf(app.Stderr, "%s Skill installed at %s\n", t.Green.Apply(sym.OK), st.Path)
+			for _, st := range installed {
+				fmt.Fprintf(app.Stderr, "%s %s skill installed at %s\n",
+					t.Green.Apply(sym.OK), st.Agent, st.Path)
+			}
 			return nil
 		},
 	}
 	scopeFlag(c, &scope)
+	c.Flags().StringVar(&agentsRaw, "agent", "popular",
+		"install target: popular|all|claude|cursor|codex|gemini or comma-separated list (prompted on TTY when omitted)")
 	c.Flags().BoolVar(&force, "force", false, "overwrite local edits to the installed skill")
+	_ = c.RegisterFlagCompletionFunc("agent", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{"popular", "all", "claude", "cursor", "codex", "gemini"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	return c
+}
+
+func resolveAgentsRaw(current string, changed, canPrompt bool, prompt func(string, string) (string, error)) (string, error) {
+	if changed || !canPrompt {
+		return current, nil
+	}
+	v, err := prompt("Install skill for agents", current)
+	if err != nil {
+		return "", err
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return current, nil
+	}
+	return v, nil
 }
 
 func newSkillStatusCmd(app *App) *cobra.Command {
