@@ -50,7 +50,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
+          # Always defined, empty when the App secrets are absent, so the
+          # cask template resolves either way.
+          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token || '' }}
 
       - name: Report tap status
         if: env.TAP_APP_ID == ''
