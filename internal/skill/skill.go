@@ -188,54 +188,101 @@ func writeManifest(dir string, m *Manifest) error {
 	return nil
 }
 
-// ReferencedCommands extracts every `ups ...` invocation mentioned in the skill.
-// The drift test (requirement X10) uses this to prove the skill only describes
-// commands that actually exist.
+// Invocation is one `ups ...` example found in the skill.
+type Invocation struct {
+	// Path is the subcommand path, e.g. "monitoring item test".
+	Path string
+	// Flags are the long flags used, without the leading dashes.
+	Flags []string
+	// Line is the source text, for error messages.
+	Line string
+}
+
+// ReferencedCommands extracts every `ups ...` command path mentioned in the
+// skill. The drift test (requirement X10) uses this to prove the skill only
+// describes commands that actually exist.
 func ReferencedCommands(content string) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, line := range strings.Split(content, "\n") {
-		for _, tok := range findInvocations(line) {
-			if !seen[tok] {
-				seen[tok] = true
-				out = append(out, tok)
-			}
+	for _, inv := range ReferencedInvocations(content) {
+		if !seen[inv.Path] {
+			seen[inv.Path] = true
+			out = append(out, inv.Path)
 		}
 	}
 	return out
 }
 
-// findInvocations pulls the command path out of a line mentioning `ups`.
-// Only the leading subcommand words are kept: flags, placeholders and shell
-// syntax are not commands.
-func findInvocations(line string) []string {
+// ReferencedInvocations extracts command paths together with their flags.
+//
+// Checking only command names is not enough: a skill can name a real command
+// and still describe a flag that does not exist, or one whose meaning has
+// changed. That is drift too, and it misleads an agent just as badly.
+func ReferencedInvocations(content string) []Invocation {
+	var out []Invocation
+	for _, line := range strings.Split(content, "\n") {
+		if inv, ok := parseInvocation(line); ok {
+			out = append(out, inv)
+		}
+	}
+	return out
+}
+
+// parseInvocation pulls the command path and long flags out of one line.
+func parseInvocation(line string) (Invocation, bool) {
 	trimmed := strings.TrimSpace(line)
-	// Skip table rows and prose; only fenced-block and inline command forms.
 	trimmed = strings.TrimPrefix(trimmed, "| ")
 	trimmed = strings.TrimPrefix(trimmed, "`")
 	if !strings.HasPrefix(trimmed, "ups ") {
-		return nil
+		return Invocation{}, false
 	}
 	fields := strings.Fields(trimmed)
+
 	var path []string
+	var flags []string
+	pathDone := false
 	for _, f := range fields[1:] {
 		f = strings.Trim(f, "`|,.")
 		if f == "" {
 			continue
 		}
-		if strings.HasPrefix(f, "-") || strings.HasPrefix(f, "<") ||
-			strings.HasPrefix(f, "$") || strings.ContainsAny(f, "|/\\\"'") {
+		// A shell pipe or redirect ends the invocation.
+		if f == "|" || f == ">" || f == "&&" || strings.HasPrefix(f, "$") {
 			break
 		}
-		if !isCommandWord(f) {
-			break
+		if strings.HasPrefix(f, "--") {
+			pathDone = true
+			name := strings.TrimPrefix(f, "--")
+			if i := strings.Index(name, "="); i >= 0 {
+				name = name[:i]
+			}
+			if name != "" && isFlagWord(name) {
+				flags = append(flags, name)
+			}
+			continue
+		}
+		if pathDone || strings.HasPrefix(f, "-") || strings.HasPrefix(f, "<") ||
+			strings.ContainsAny(f, "|/\\\"'") || !isCommandWord(f) {
+			// Positional arguments and placeholders are not subcommands, but
+			// flags may still follow them.
+			pathDone = true
+			continue
 		}
 		path = append(path, f)
 	}
 	if len(path) == 0 {
-		return nil
+		return Invocation{}, false
 	}
-	return []string{strings.Join(path, " ")}
+	return Invocation{Path: strings.Join(path, " "), Flags: flags, Line: trimmed}, true
+}
+
+func isFlagWord(s string) bool {
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func isCommandWord(s string) bool {

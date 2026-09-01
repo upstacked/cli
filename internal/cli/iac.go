@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/upstacked/cli/internal/errs"
 	"github.com/upstacked/cli/internal/iac"
-	"gopkg.in/yaml.v3"
 )
 
 // exportInfra reads the live state of an infrastructure into a Document.
@@ -90,13 +89,27 @@ func newExportCmd(app *App) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "export",
 		Short: "Export an infrastructure to YAML",
-		Long: `Write the live state of an infrastructure to a YAML file you can
-commit to git.
+		Long: `Write the live state of an infrastructure to YAML you can commit.
 
-Output is sorted so that re-exporting unchanged state produces an identical
-file. If it did not, every export would look like a diff.`,
-		Example: `  ups export --out infra.yaml
-  ups export --infra 42 --out customers/acme.yaml`,
+--out takes either a file or a directory. A directory gives one file per
+host, which keeps git diffs small and reviewable on a real infrastructure:
+
+  infra/
+    infrastructure.yaml
+    hosts/
+      core-sw-01.yaml
+      fw-01.yaml
+
+Output is sorted, and filenames are derived from host names, so re-exporting
+unchanged state produces identical bytes. If it did not, every export would
+look like a diff.
+
+Re-exporting into a directory removes host files whose resource no longer
+exists on the platform, and says which ones. A leftover file would read as a
+host to create on the next apply.`,
+		Example: `  ups export --out ./infra/              # one file per host
+  ups export --out infra.yaml            # single file
+  ups export --infra 42 --out customers/acme/`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			infraID, err := app.Resolved.RequireInfra()
 			if err != nil {
@@ -110,47 +123,52 @@ file. If it did not, every export would look like a diff.`,
 			}); err != nil {
 				return err
 			}
-			b, err := yaml.Marshal(doc)
-			if err != nil {
-				return errs.General("cannot serialize the document").Wrapping(err)
-			}
 			if out == "" || out == "-" {
+				b, err := iac.Marshal(doc)
+				if err != nil {
+					return errs.General("cannot serialize the document").Wrapping(err)
+				}
 				fmt.Fprint(app.Stdout, string(b))
 				return nil
 			}
-			if dir := filepath.Dir(out); dir != "." {
-				if err := os.MkdirAll(dir, 0o755); err != nil {
-					return errs.General("cannot create %s", dir).Wrapping(err)
-				}
-			}
-			if err := os.WriteFile(out, b, 0o644); err != nil {
+
+			res, err := iac.Save(doc, out)
+			if err != nil {
 				return errs.General("cannot write %s", out).Wrapping(err)
 			}
 			t, sym := app.Theme(), app.Sym()
-			fmt.Fprintf(app.Stderr, "%s Wrote %d host(s) to %s\n",
-				t.Green.Apply(sym.OK), len(doc.Hosts), out)
+			if res.Directory {
+				fmt.Fprintf(app.Stderr, "%s Wrote %d host(s) to %s%c\n",
+					t.Green.Apply(sym.OK), len(doc.Hosts), strings.TrimRight(out, "/"), os.PathSeparator)
+				for _, r := range res.Removed {
+					// Say so explicitly: a silently vanishing file is
+					// indistinguishable from one the user deleted themselves.
+					fmt.Fprintf(app.Stderr, "  %s removed %s (no longer on the platform)\n",
+						t.Yellow.Apply("-"), r)
+				}
+			} else {
+				fmt.Fprintf(app.Stderr, "%s Wrote %d host(s) to %s\n",
+					t.Green.Apply(sym.OK), len(doc.Hosts), out)
+			}
 			return nil
 		},
 	}
-	c.Flags().StringVarP(&out, "out", "o", "", "file to write (default stdout)")
+	c.Flags().StringVarP(&out, "out", "o", "",
+		"where to write: a .yaml file, or a directory for one file per host (default stdout)")
 	return c
 }
 
 // loadDocument reads and validates a local document.
 func loadDocument(path string) (*iac.Document, error) {
-	b, err := os.ReadFile(path)
+	doc, err := iac.Load(path)
 	if err != nil {
-		return nil, errs.Usage("cannot read %s", path).Wrapping(err)
-	}
-	var doc iac.Document
-	if err := yaml.Unmarshal(b, &doc); err != nil {
-		return nil, errs.Usage("cannot parse %s", path).Wrapping(err)
+		return nil, errs.Usage("cannot read %s: %v", path, err).
+			WithHint("point at a file from 'ups export --out x.yaml', or a directory from 'ups export --out ./infra/'")
 	}
 	if err := doc.Validate(); err != nil {
 		return nil, errs.Usage("%s is not valid: %v", path, err)
 	}
-	doc.Normalize()
-	return &doc, nil
+	return doc, nil
 }
 
 // planFor loads local state, exports remote state, and diffs them.
@@ -233,9 +251,11 @@ func (a *App) renderPlan(plan *iac.Plan, infraID string) {
 
 func newDiffCmd(app *App) *cobra.Command {
 	c := &cobra.Command{
-		Use:   "diff <file.yaml>",
+		Use:   "diff <path>",
 		Short: "Show what apply would change",
 		Long: `Compare a local document against the live infrastructure.
+
+<path> is a file or an export directory; both forms describe the same thing.
 
 Read this before every apply. The export covers a whole infrastructure, so a
 block missing from the document is a deletion.`,
@@ -270,7 +290,7 @@ block missing from the document is a deletion.`,
 func newApplyCmd(app *App) *cobra.Command {
 	var allowDelete bool
 	c := &cobra.Command{
-		Use:   "apply <file.yaml>",
+		Use:   "apply <path>",
 		Short: "Make the infrastructure match the document",
 		Long: `Converge the platform to a local document.
 
@@ -278,8 +298,8 @@ apply is idempotent and safe to re-run. It is not safe to run unread: run
 'ups diff' first. Deletions require --allow-delete, and that flag is not a
 way past an error - if the plan proposes deletions you did not intend, the
 document is wrong.`,
-		Example: `  ups diff infra.yaml
-  ups apply infra.yaml
+		Example: `  ups diff ./infra/
+  ups apply ./infra/
   ups apply infra.yaml --allow-delete --yes`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

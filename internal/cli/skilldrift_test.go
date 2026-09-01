@@ -40,6 +40,37 @@ func TestSkillDescribesOnlyRealCommands(t *testing.T) {
 	}
 }
 
+// TestSkillUsesOnlyRealFlags is the other half of X10.
+//
+// Checking command names alone is not enough. The skill once documented
+// `ups export --out ./infra/` while --out only ever wrote a single file: a
+// real command, a real flag, and wrong guidance. Flags are verified here so
+// that kind of drift fails the build too.
+func TestSkillUsesOnlyRealFlags(t *testing.T) {
+	app := &App{Stdin: nil, Stdout: os.Stdout, Stderr: os.Stderr}
+	root := NewRoot(app)
+
+	for _, inv := range skill.ReferencedInvocations(skill.Content) {
+		if len(inv.Flags) == 0 {
+			continue
+		}
+		cmd, _, err := root.Find(strings.Fields(inv.Path))
+		if err != nil {
+			continue // reported by TestSkillDescribesOnlyRealCommands
+		}
+		for _, flag := range inv.Flags {
+			if cmd.Flags().Lookup(flag) != nil || cmd.InheritedFlags().Lookup(flag) != nil {
+				continue
+			}
+			if root.PersistentFlags().Lookup(flag) != nil {
+				continue
+			}
+			t.Errorf("SKILL.md uses --%s on `ups %s`, which has no such flag\n  line: %s",
+				flag, inv.Path, inv.Line)
+		}
+	}
+}
+
 // resolvesFully reports whether every word in args was consumed by the command
 // tree rather than left over as an argument.
 func resolvesFully(cmd *cobra.Command, args []string) bool {
@@ -84,6 +115,11 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		{"cross-customer ambiguity", "wrong customer's device"},
 		{"doctor vs healthcheck", "ups infra healthcheck"},
 		{"client-side log filtering", "no query"},
+		// An agent runs without a TTY, so the confirmation and login rules are
+		// the difference between working and failing on the first mutation.
+		{"no-TTY operation", "without a terminal"},
+		{"--yes is not a safety override", "not the *safety*"},
+		{"apply is not transactional", "Nothing is rolled back"},
 	}
 	for _, r := range required {
 		if !strings.Contains(skill.Content, r.phrase) {

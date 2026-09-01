@@ -43,11 +43,25 @@ ups logs search --since 1h --text "link down"
 Export an infrastructure to YAML, keep it in git, and reconcile:
 
 ```sh
-ups export --out infra.yaml
-$EDITOR infra.yaml
-ups diff infra.yaml        # read this. every time.
-ups apply infra.yaml
+ups export --out ./infra/   # one file per host
+ups diff ./infra/           # read this. every time.
+ups apply ./infra/
 ```
+
+`--out` takes a directory or a single `.yaml` file. Prefer a directory on a
+real infrastructure — one file per host keeps git diffs small:
+
+```
+infra/
+  infrastructure.yaml
+  hosts/
+    core-sw-01.yaml
+    fw-01.yaml
+```
+
+Re-exporting into a directory removes host files whose resource is gone from
+the platform, and reports which. A leftover file would read as a host to
+create on the next apply.
 
 `apply` is idempotent and safe to re-run. It is not safe to run unread: the
 export covers a whole infrastructure, so a block missing from the document is a

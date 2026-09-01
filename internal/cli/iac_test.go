@@ -249,3 +249,106 @@ func TestExportRefusesTruncatedResults(t *testing.T) {
 	contains(t, res.Stderr, "truncated")
 	contains(t, res.Stderr, "look like deletions")
 }
+
+// Directory export is the documented default in the skill, so it gets an
+// end-to-end test through the real command surface.
+func TestExportToDirectoryAndDiffFromIt(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteState(e,
+		[]any{
+			map[string]any{"id": 1, "name": "core-sw-01", "i_ip_address": "10.0.0.1"},
+			map[string]any{"id": 2, "name": "fw-01", "i_ip_address": "10.0.0.2"},
+		},
+		[]any{map[string]any{"id": 10, "host": 1, "name": "CPU"}},
+	)
+
+	dir := filepath.Join(t.TempDir(), "infra")
+	if res := e.run("export", "--out", dir+"/"); res.ExitCode != 0 {
+		t.Fatalf("export failed: %s", res.Stderr)
+	}
+	for _, p := range []string{"infrastructure.yaml", "hosts/core-sw-01.yaml", "hosts/fw-01.yaml"} {
+		if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
+			t.Errorf("expected %s: %v", p, err)
+		}
+	}
+
+	// The directory must diff exactly like the single-file form.
+	res := e.run("diff", dir)
+	if res.ExitCode != 0 {
+		t.Fatalf("diff failed: %s", res.Stderr)
+	}
+	contains(t, res.Stdout, "No changes")
+}
+
+func TestApplyFromDirectory(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteState(e,
+		[]any{map[string]any{"id": 1, "name": "core-sw-01", "i_ip_address": "10.0.0.1"}},
+		[]any{},
+	)
+	e.stub.handleMethod("PATCH", "/api/host/1/", 200, map[string]any{"id": 1})
+
+	dir := filepath.Join(t.TempDir(), "infra")
+	if res := e.run("export", "--out", dir+"/"); res.ExitCode != 0 {
+		t.Fatalf("export failed: %s", res.Stderr)
+	}
+	// Edit the exported host file the way a user would.
+	hostFile := filepath.Join(dir, "hosts", "core-sw-01.yaml")
+	b, err := os.ReadFile(hostFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(b), "10.0.0.1", "10.0.0.5", 1)
+	if err := os.WriteFile(hostFile, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := e.run("apply", dir, "--yes")
+	if res.ExitCode != 0 {
+		t.Fatalf("apply failed: %s\n%s", res.Stderr, res.Stdout)
+	}
+	if got := e.stub.requestsTo("PATCH", "/api/host/1/"); len(got) != 1 {
+		t.Fatalf("expected one update, saw %d", len(got))
+	}
+}
+
+// Re-exporting must clear out files for hosts that no longer exist, or the
+// next apply would propose re-creating them.
+func TestReexportRemovesFilesForDeletedHosts(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteState(e,
+		[]any{
+			map[string]any{"id": 1, "name": "core-sw-01"},
+			map[string]any{"id": 2, "name": "fw-01"},
+		},
+		[]any{},
+	)
+	dir := filepath.Join(t.TempDir(), "infra")
+	if res := e.run("export", "--out", dir+"/"); res.ExitCode != 0 {
+		t.Fatalf("export failed: %s", res.Stderr)
+	}
+
+	// fw-01 disappears from the platform.
+	e.stub.handleMethod("GET", "/api/host/", 200, page(
+		map[string]any{"id": 1, "name": "core-sw-01"},
+	))
+	res := e.run("export", "--out", dir+"/")
+	if res.ExitCode != 0 {
+		t.Fatalf("re-export failed: %s", res.Stderr)
+	}
+	contains(t, res.Stderr, "removed")
+	if _, err := os.Stat(filepath.Join(dir, "hosts", "fw-01.yaml")); !os.IsNotExist(err) {
+		t.Error("the file for the deleted host should be gone")
+	}
+
+	// And the result must diff clean, not propose re-creating fw-01.
+	if res := e.run("diff", dir); !strings.Contains(res.Stdout, "No changes") {
+		t.Errorf("expected a clean diff after re-export, got:\n%s", res.Stdout)
+	}
+}

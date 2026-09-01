@@ -10,10 +10,32 @@ who get paged. Most commands here touch production. This document is mostly abou
 the workflows are shaped the way they are — the `how` is in `ups <command> --help`, which
 is always more current than this file.
 
+## You are probably running without a terminal
+
+This trips agents more than anything else here, so deal with it first.
+
+`ups` never prompts when stdin is not a terminal. It fails instead, with exit code 2 and a
+message naming the flag you needed. That is deliberate — a prompt nobody can answer is a
+hang — but it means:
+
+- **Mutating commands need `--yes`.** Delete, apply, maintenance close, discovery start and
+  runbook run all confirm first. Without a terminal they fail rather than proceeding.
+- **`ups login` cannot prompt for a password.** Use `--password-stdin`, or set
+  `UPSTACKED_TOKEN` in the environment and skip login entirely.
+- **`ups init` and `ups context set` want to show a picker.** Pass `--non-interactive` and
+  the explicit ids, or they fail.
+
+`--yes` suppresses the *prompt*, not the *safety*. It does not permit deletions in
+`ups apply` — that still needs `--allow-delete` — and it does not lower any other guard.
+
+Run `ups doctor` first when anything looks wrong. It checks the local setup only, reports
+every problem at once rather than stopping at the first, and exits non-zero if any check
+fails.
+
 ## Mental model
 
-An **infrastructure** is the top-level scope. It belongs to a **customer**. Almost
-everything else hangs off an infrastructure:
+An **infrastructure** is the top-level scope, and it is what `--infra` selects. It belongs
+to a **customer**. Almost everything else hangs off an infrastructure:
 
 ```
 customer
@@ -56,34 +78,44 @@ didn't. Every other failure in this system announces itself; this one does not.
 So: before anything that could remove or alter monitoring — `ups apply`, bulk update,
 bulk delete — run the diff and read it. Coverage removal is the line item to look for.
 
-### Test a monitoring item before saving it
-
-```
-ups monitoring item test --host <host> --module <module> --params ...   # inspect the raw response
-ups monitoring item create ...                                          # only then
-```
+### A monitoring item is not trustworthy until it has returned data
 
 A misconfigured item does not error. It returns nothing, or it returns the wrong field,
-and you get either silence or false alerts. The test endpoint is the only feedback loop
-that exists — there is no "is this working?" indicator afterwards that distinguishes
-"healthy" from "never collected anything".
+and you get either silence or false alerts. Testing is the only feedback loop that exists:
+afterwards there is no indicator distinguishing "healthy" from "never collected anything".
+
+`ups monitoring item create` therefore tests the item it just made, and prints the
+response. Read it. If the test fails, the item exists but is collecting nothing — fix it
+or remove it, and tell the user; do not leave it and move on.
+
+```
+ups monitoring item create --host <id> --name "CPU" --module <id>   # creates, then tests
+ups monitoring item test <item-id>                                  # re-test an existing item
+```
+
+The API cannot test a configuration that has not been saved, so there is no way to check
+one before creating it. `--skip-test` exists, but using it means nobody has confirmed the
+check works.
 
 ### Preflight a runbook before running it
 
 ```
-ups runbook preflight <runbook>    # checks for missing credentials
-ups runbook run <runbook> --infra <infra>
+ups runbook preflight <runbook>
+ups runbook run <runbook> --yes
 ```
 
 Runbooks execute against live network devices. A run that fails halfway because a
 credential was missing can leave a device **partially configured** — worse than not having
 run at all. The preflight is cheap. Partial execution is not.
 
+`run` preflights on its own and refuses to start when credentials are missing.
+`--skip-preflight` overrides that; do not reach for it to get past the error.
+
 ### Validate before importing
 
 ```
 ups asset import validate <file.csv>   # errors surface here
-ups asset import apply <file.csv>
+ups asset import apply <file.csv> --yes
 ```
 
 The API deliberately separates validation from import. Treat that split as a signal: the
@@ -99,27 +131,46 @@ unless it is inside a declared window.
 ups maintenance create --hosts <h1,h2> --duration 2h --reason "..."
 ```
 
+`ups change create --hosts ... --window 2h` opens both at once, which is usually what
+planned work wants.
+
 ### Never put a secret in argv
 
 ```
-ups credential create snmpv3 --name x --password-stdin < secret   # correct
-ups credential create snmpv3 --name x --password hunter2          # WRONG
+printf '%s' "$PW" | ups credential create snmpv3 --name core --username admin --secret-stdin
 ```
 
-`argv` is visible to `ps`, lands in shell history, and in CI lands in build logs. These
-credentials authenticate to live network equipment. Use `--*-stdin` or the documented
-environment variables. `ups` will reject secret-bearing flags that receive a literal value.
+Not as a flag value. `argv` is visible to `ps`, lands in shell history, and in CI lands in
+build logs — and these credentials authenticate to live network equipment. Every command
+that takes a secret offers `--secret-stdin` or `--secret-file`; `ups login` offers
+`--password-stdin` and `--password-file`.
+
+Never echo a secret back to the user, into a file, or into a commit.
 
 ## Diff before apply, always
 
 Infrastructure-as-code is the primary way to make bulk changes:
 
 ```
-ups export --infra <infra> --out ./infra/     # pull current state to YAML
-$EDITOR ./infra/...
-ups diff  ./infra/                            # read this. every time.
-ups apply ./infra/                            # converges the platform to the YAML
+ups export --out ./infra/     # pull current state to YAML
+ups diff ./infra/             # read this. every time.
+ups apply ./infra/ --yes      # converges the platform to the YAML
 ```
+
+`--out` takes a directory or a single file. Prefer a directory: one file per host keeps
+git diffs small and reviewable.
+
+```
+infra/
+  infrastructure.yaml     # apiVersion and which infrastructure this is
+  hosts/
+    core-sw-01.yaml       # one host, with its monitoring items nested
+    fw-01.yaml
+```
+
+`diff` and `apply` accept either form. Re-exporting into a directory deletes host files
+whose resource is gone from the platform, and says which — a leftover file would read as a
+host to create on the next apply.
 
 `apply` is idempotent and safe to re-run. It is **not** safe to run unread. The diff is
 the entire safety mechanism, because the export covers a whole infrastructure — a deleted
@@ -129,6 +180,9 @@ is a silent failure.
 `apply` refuses destructive diffs unless given `--allow-delete`. Do not add that flag to
 get past an error. If the diff proposes deletions the user did not intend, the YAML is
 wrong — fix the YAML.
+
+If apply fails partway it stops at that step and names it. Nothing is rolled back, so
+re-run `ups diff` to see what remains rather than assuming either outcome.
 
 ### Renaming
 
@@ -151,11 +205,13 @@ parameters** — the CLI fetches and filters locally.
 
 Consequences you must account for:
 
-- Filtering is not free. Do not loop `ups logs` in a shell loop over many hosts.
-- Always bound the query (`--limit`, `--since`). `ups` enforces a hard cap and will tell
-  you when results were truncated. Truncated results are not "no matches" — say so.
-- Do not promise the user a filter that is not applied server-side; the result set may be
-  incomplete in ways client-side filtering cannot detect.
+- Filtering is not free. Never call `ups logs` in a loop over many hosts; fetch once and
+  narrow with `--text` or `--host`.
+- Always bound the query with `--limit` and `--since`. `ups` caps traversal and reports
+  when results were truncated. Truncated is not "no matches" — pass that distinction on to
+  the user rather than reporting an empty result as conclusive.
+- Do not promise a filter that is not applied server-side; the set may be incomplete in
+  ways client-side filtering cannot detect.
 
 There is no log-based device discovery. Discovery is topology scanning — see `ups discovery`.
 
@@ -164,13 +220,14 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 | Looks similar | Actually |
 |---|---|
 | `ups doctor` | Checks **your local setup** — config, auth, context, this skill. Touches nothing remote except to verify the token. |
-| `ups infra healthcheck` | Starts a **platform-side scan of an infrastructure**. This is a real operation against the customer's environment. Requires API credentials on the infrastructure. |
+| `ups infra healthcheck` | Starts a **platform-side scan of an infrastructure**. A real operation against the customer's environment, and it needs API credentials on the infrastructure. |
 | `/api/status/` | Ticket statuses (a lookup table), not system health. There is no `ups` command for it. |
 | monitoring **module** | The definition of *what* to check. |
 | monitoring **item** | An instance of a module bound to a host + credential. |
 | monitoring **event** | A fired alert. |
-| `change` | The planned/recorded work. |
+| `change` | The planned or recorded work. |
 | `change_log` | The field-level audit trail of what was actually mutated. |
+| `ups event silence` | Mutes one event. For planned work use a maintenance window instead — it covers every host you are touching. |
 
 Confusing `doctor` with `infra healthcheck` means running a live scan when the user asked
 you to check their config. Do not.
@@ -203,9 +260,17 @@ exploratory or experimental, confirm the target before proceeding.
 - `--id-only` emits bare IDs for piping.
 - Exit codes are meaningful: `0` ok, `1` general failure, `2` usage error, `3` auth
   failure, `4` not found, `5` conflict/precondition failed. Check them; do not grep stderr.
-- Every list command paginates. `ups` caps unbounded traversal and reports truncation
-  rather than silently returning a partial set. Report truncation to the user.
-- `--dry-run` exists on mutating commands. Prefer it when the user's intent is ambiguous.
+- Progress, warnings and truncation notes go to stderr; data goes to stdout. Piping stdout
+  is safe.
+- Every list command paginates and is capped by `--limit` (default 100). Truncation is
+  always reported. Report it onward.
+- `--dry-run` shows what a mutating command would send without sending it. Prefer it when
+  the user's intent is ambiguous.
+- `ups event watch` and `ups logs follow` render live tables and cannot emit `--json`.
+  For scripted polling call the plain `list`/`search` form on an interval instead.
+
+When a command is denied, `ups whoami` shows the roles actually granted, which is usually
+the answer to "why can't I do this".
 
 ## When to stop and ask
 
@@ -215,10 +280,13 @@ Stop and ask the user rather than guessing:
 - A diff proposes deleting monitoring items, hosts, or credentials that the user did not
   explicitly ask to remove.
 - A runbook preflight reports missing credentials.
+- A monitoring item was created but its test returned nothing.
 - The active context is not the infrastructure the user seems to be talking about.
 - The active API URL is production and the request looks exploratory or experimental.
 - An operation would affect more than a handful of hosts and the user did not name a bulk
   operation.
+- You are about to pass `--allow-delete`, `--skip-preflight` or `--skip-test` to get past
+  an error rather than because the user asked for it.
 
 The cost of asking is one message. The cost of a wrong write is a customer-facing incident.
 
