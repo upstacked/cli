@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/spf13/cobra"
 	"github.com/upstacked/cli/internal/errs"
@@ -54,18 +53,15 @@ func (a *App) exportInfra(infraID string) (*iac.Document, error) {
 	byHost := map[string][]iac.MonitoringItem{}
 	for _, m := range decodeRows(items.Items) {
 		hostID := str(m, "host")
-		item := iac.MonitoringItem{
+		byHost[hostID] = append(byHost[hostID], iac.MonitoringItem{
+			ID:         str(m, "id"),
 			Name:       str(m, "name"),
 			Module:     str(m, "monitoring_module"),
+			Interval:   str(m, "interval"),
 			Parameters: str(m, "parameters"),
 			CredType:   str(m, "credential_type"),
 			Credential: str(m, "credential"),
-		}
-		if iv := str(m, "interval"); iv != "" {
-			item.Interval, _ = strconv.Atoi(iv)
-		}
-		item.SetID(str(m, "id"))
-		byHost[hostID] = append(byHost[hostID], item)
+		})
 	}
 
 	doc := &iac.Document{
@@ -74,7 +70,8 @@ func (a *App) exportInfra(infraID string) (*iac.Document, error) {
 	}
 	for _, m := range decodeRows(hosts.Items) {
 		id := str(m, "id")
-		h := iac.Host{
+		doc.Hosts = append(doc.Hosts, iac.Host{
+			ID:         id,
 			Name:       str(m, "name"),
 			Hostname:   str(m, "i_hostname"),
 			IP:         str(m, "i_ip_address"),
@@ -82,9 +79,7 @@ func (a *App) exportInfra(infraID string) (*iac.Document, error) {
 			Type:       str(m, "i_type"),
 			Serial:     str(m, "i_serial"),
 			Monitoring: byHost[id],
-		}
-		h.SetID(id)
-		doc.Hosts = append(doc.Hosts, h)
+		})
 	}
 	doc.Normalize()
 	return doc, nil
@@ -215,10 +210,24 @@ func (a *App) renderPlan(plan *iac.Plan, infraID string) {
 	}
 	create, update, del := plan.Counts()
 	fmt.Fprintf(a.Stdout, "\n%d to create, %d to update, %d to delete.\n", create, update, del)
+	if renames := plan.Renames(); len(renames) > 0 {
+		fmt.Fprintf(a.Stdout, "\n%s %d rename(s) will keep the existing resource and its history.\n",
+			t.Green.Apply(sym.OK), len(renames))
+	}
 	if del > 0 {
 		fmt.Fprintf(a.Stdout, "\n%s %s\n", t.Red.Apply(sym.Warn),
 			t.Bold.Apply("Deleting monitoring is silent: nothing alerts when a check disappears."))
 		fmt.Fprintf(a.Stdout, "  Read the deletions above. If they were not intended, the document is wrong.\n")
+	}
+	// A create paired with a delete of a look-alike resource is almost always
+	// a rename attempted on a document whose ids were stripped. Saying so is
+	// far more useful than letting the user destroy and recreate the host.
+	for _, pair := range plan.LikelyRenames() {
+		fmt.Fprintf(a.Stdout, "\n%s %s\n", t.Yellow.Apply(sym.Warn),
+			t.Bold.Apply(fmt.Sprintf("%q and %q look like the same %s renamed.",
+				pair.From, pair.To, pair.Kind)))
+		fmt.Fprintf(a.Stdout, "  As written this deletes one and creates the other, losing its history.\n")
+		fmt.Fprintf(a.Stdout, "  To rename in place, keep the `id:` field from `ups export` and change only `name:`.\n")
 	}
 }
 

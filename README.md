@@ -53,9 +53,12 @@ ups apply infra.yaml
 export covers a whole infrastructure, so a block missing from the document is a
 deletion. Deletions require `--allow-delete`.
 
-Identity is by **name within an infrastructure**, never by server-assigned id,
-so the document is portable and hand-editable. Renaming therefore reads as
-delete-plus-create.
+Exported documents carry an `id:` per host and monitoring item. Keep it and a
+name change is a real rename — one update, history intact. Strip the ids and
+matching falls back to name, where a rename is indistinguishable from
+delete-plus-create; `ups diff` warns when a create/delete pair looks like an
+accidental rename. Drop ids deliberately when you want a portable template for
+a different infrastructure.
 
 ## Scripting
 

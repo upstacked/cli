@@ -10,29 +10,24 @@ const MaxPlanSteps = 2000
 
 // Diff computes the steps that would make remote match local.
 //
-// Both sides are keyed by name within the infrastructure. Anything present
-// remotely but absent locally is a deletion, which is why an export that
-// silently missed a resource would be dangerous - see Export's cap handling.
+// Matching is by server-assigned id first, then by name. The id path is what
+// makes a rename a rename: without it, changing a name reads as "delete this,
+// create that", which destroys the resource and its history.
 func Diff(local, remote *Document) *Plan {
 	plan := &Plan{}
 
-	remoteHosts := map[string]*Host{}
-	for i := range remote.Hosts {
-		remoteHosts[remote.Hosts[i].Name] = &remote.Hosts[i]
-	}
-	localHosts := map[string]*Host{}
-	for i := range local.Hosts {
-		localHosts[local.Hosts[i].Name] = &local.Hosts[i]
-	}
+	byID, byName := indexHosts(remote)
+	// Claimed remote hosts are tracked by pointer, not by id: a hand-authored
+	// document has no ids, and keying on an empty string would mark every
+	// unmatched host as claimed and silently drop all deletions.
+	matched := map[*Host]bool{}
 
-	// Creates and updates.
 	for i := range local.Hosts {
 		lh := &local.Hosts[i]
-		rh, exists := remoteHosts[lh.Name]
-		if !exists {
+		rh := matchHost(lh, byID, byName)
+		if rh == nil {
 			plan.Add(Step{
-				Action: ActionCreate, Kind: "host", Name: lh.Name,
-				Body: hostBody(lh),
+				Action: ActionCreate, Kind: "host", Name: lh.Name, Body: hostBody(lh),
 			})
 			for j := range lh.Monitoring {
 				plan.Add(Step{
@@ -42,68 +37,122 @@ func Diff(local, remote *Document) *Plan {
 			}
 			continue
 		}
-		if fields := hostFieldDiff(lh, rh); len(fields) > 0 {
+		matched[rh] = true
+
+		fields := hostFieldDiff(lh, rh)
+		rename := ""
+		if lh.Name != rh.Name {
+			// Only reachable when the two were matched by id.
+			rename = rh.Name
+			fields = append([]string{"name"}, fields...)
+		}
+		if len(fields) > 0 {
 			plan.Add(Step{
-				Action: ActionUpdate, Kind: "host", Name: lh.Name, ID: rh.id,
-				Fields: fields, Body: hostBody(lh),
+				Action: ActionUpdate, Kind: "host", Name: lh.Name, ID: rh.ID,
+				Fields: fields, Rename: rename, Body: hostBody(lh),
 			})
 		}
 		plan.Steps = append(plan.Steps, diffMonitoring(lh, rh)...)
 	}
 
-	// Deletions: remote resources with no local counterpart.
+	// Deletions: remote hosts no local entry claimed.
 	for i := range remote.Hosts {
 		rh := &remote.Hosts[i]
-		lh, exists := localHosts[rh.Name]
-		if !exists {
-			// Delete the host's items first so the intent is legible in the plan.
-			for j := range rh.Monitoring {
-				plan.Add(Step{
-					Action: ActionDelete, Kind: "monitoring", Name: rh.Monitoring[j].Name,
-					Host: rh.Name, ID: rh.Monitoring[j].id,
-				})
-			}
-			plan.Add(Step{Action: ActionDelete, Kind: "host", Name: rh.Name, ID: rh.id})
+		if matched[rh] {
 			continue
 		}
-		localItems := map[string]bool{}
-		for _, m := range lh.Monitoring {
-			localItems[m.Name] = true
-		}
 		for j := range rh.Monitoring {
-			if !localItems[rh.Monitoring[j].Name] {
-				plan.Add(Step{
-					Action: ActionDelete, Kind: "monitoring", Name: rh.Monitoring[j].Name,
-					Host: rh.Name, ID: rh.Monitoring[j].id,
-				})
-			}
+			plan.Add(Step{
+				Action: ActionDelete, Kind: "monitoring", Name: rh.Monitoring[j].Name,
+				Host: rh.Name, ID: rh.Monitoring[j].ID, Body: itemBody(&rh.Monitoring[j]),
+			})
 		}
+		// The body is carried on deletes purely so a delete/create pair can be
+		// recognised as a probable rename before it is executed.
+		plan.Add(Step{Action: ActionDelete, Kind: "host", Name: rh.Name, ID: rh.ID, Body: hostBody(rh)})
 	}
 
 	plan.Sort()
 	return plan
 }
 
+func indexHosts(d *Document) (byID, byName map[string]*Host) {
+	byID, byName = map[string]*Host{}, map[string]*Host{}
+	for i := range d.Hosts {
+		h := &d.Hosts[i]
+		if h.ID != "" {
+			byID[h.ID] = h
+		}
+		byName[h.Name] = h
+	}
+	return
+}
+
+// matchHost resolves a local host to its remote counterpart. A stale id (one
+// that no longer exists remotely) falls back to name matching rather than
+// silently creating a duplicate.
+func matchHost(lh *Host, byID, byName map[string]*Host) *Host {
+	if lh.ID != "" {
+		if rh, ok := byID[lh.ID]; ok {
+			return rh
+		}
+	}
+	if rh, ok := byName[lh.Name]; ok {
+		return rh
+	}
+	return nil
+}
+
 func diffMonitoring(local, remote *Host) []Step {
 	var steps []Step
-	remoteItems := map[string]*MonitoringItem{}
+	byID, byName := map[string]*MonitoringItem{}, map[string]*MonitoringItem{}
 	for i := range remote.Monitoring {
-		remoteItems[remote.Monitoring[i].Name] = &remote.Monitoring[i]
+		m := &remote.Monitoring[i]
+		if m.ID != "" {
+			byID[m.ID] = m
+		}
+		byName[m.Name] = m
 	}
+	matched := map[*MonitoringItem]bool{}
+
 	for i := range local.Monitoring {
 		li := &local.Monitoring[i]
-		ri, exists := remoteItems[li.Name]
-		if !exists {
+		var ri *MonitoringItem
+		if li.ID != "" {
+			ri = byID[li.ID]
+		}
+		if ri == nil {
+			ri = byName[li.Name]
+		}
+		if ri == nil {
 			steps = append(steps, Step{
 				Action: ActionCreate, Kind: "monitoring", Name: li.Name,
 				Host: local.Name, Body: itemBody(li),
 			})
 			continue
 		}
-		if fields := itemFieldDiff(li, ri); len(fields) > 0 {
+		matched[ri] = true
+
+		fields := itemFieldDiff(li, ri)
+		rename := ""
+		if li.Name != ri.Name {
+			rename = ri.Name
+			fields = append([]string{"name"}, fields...)
+		}
+		if len(fields) > 0 {
 			steps = append(steps, Step{
 				Action: ActionUpdate, Kind: "monitoring", Name: li.Name,
-				Host: local.Name, ID: ri.id, Fields: fields, Body: itemBody(li),
+				Host: local.Name, ID: ri.ID, Fields: fields, Rename: rename, Body: itemBody(li),
+			})
+		}
+	}
+
+	for i := range remote.Monitoring {
+		ri := &remote.Monitoring[i]
+		if !matched[ri] {
+			steps = append(steps, Step{
+				Action: ActionDelete, Kind: "monitoring", Name: ri.Name,
+				Host: remote.Name, ID: ri.ID, Body: itemBody(ri),
 			})
 		}
 	}
@@ -133,7 +182,7 @@ func itemFieldDiff(local, remote *MonitoringItem) []string {
 	if local.Module != "" && local.Module != remote.Module {
 		changed = append(changed, "module")
 	}
-	if local.Interval != 0 && local.Interval != remote.Interval {
+	if local.Interval != "" && local.Interval != remote.Interval {
 		changed = append(changed, "interval")
 	}
 	if local.Parameters != "" && strings.TrimSpace(local.Parameters) != strings.TrimSpace(remote.Parameters) {
@@ -148,6 +197,8 @@ func itemFieldDiff(local, remote *MonitoringItem) []string {
 	return changed
 }
 
+// hostBody builds the API payload. Numeric references are sent as numbers:
+// the API rejects a string where it expects a primary key.
 func hostBody(h *Host) map[string]any {
 	b := map[string]any{"name": h.Name}
 	put(b, "i_hostname", h.Hostname)
@@ -160,13 +211,14 @@ func hostBody(h *Host) map[string]any {
 
 func itemBody(m *MonitoringItem) map[string]any {
 	b := map[string]any{"name": m.Name}
-	put(b, "monitoring_module", m.Module)
+	putRef(b, "monitoring_module", m.Module)
+	// interval is a foreign key to a monitoring interval, not a number of
+	// seconds. Confirmed against a live server, which rejects a raw duration
+	// with `Invalid pk "60" - object does not exist`.
+	putRef(b, "interval", m.Interval)
+	putRef(b, "credential", m.Credential)
 	put(b, "parameters", m.Parameters)
 	put(b, "credential_type", m.CredType)
-	put(b, "credential", m.Credential)
-	if m.Interval != 0 {
-		b["interval"] = m.Interval
-	}
 	return b
 }
 
@@ -174,4 +226,30 @@ func put(m map[string]any, k, v string) {
 	if v != "" {
 		m[k] = v
 	}
+}
+
+// putRef writes a primary-key reference, as a number when it looks like one.
+func putRef(m map[string]any, k, v string) {
+	if v == "" {
+		return
+	}
+	if n, ok := asInt(v); ok {
+		m[k] = n
+		return
+	}
+	m[k] = v
+}
+
+func asInt(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
 }

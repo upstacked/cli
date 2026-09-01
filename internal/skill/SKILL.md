@@ -130,9 +130,19 @@ is a silent failure.
 get past an error. If the diff proposes deletions the user did not intend, the YAML is
 wrong — fix the YAML.
 
-Identity in the YAML is by **name within an infrastructure**, not by server-assigned ID.
-Renaming a resource in YAML therefore reads as delete-plus-create, not as a rename. Warn
-the user before doing it.
+### Renaming
+
+Exported documents carry an `id:` on each host and monitoring item. **Keep it.** With the
+id present, changing `name:` is a real rename: one update, the resource and its monitoring
+history survive.
+
+Strip the ids and identity falls back to name, where a rename is indistinguishable from
+"delete this, create that" — the diff will show a delete plus a create, and `ups diff`
+warns when a pair looks like an accidental rename. If you see that warning, do not proceed:
+restore the `id:` field instead.
+
+Drop the ids only when you deliberately want a portable template to apply to a *different*
+infrastructure.
 
 ## Logs: filtering is client-side right now
 

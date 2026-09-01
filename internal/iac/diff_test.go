@@ -1,6 +1,9 @@
 package iac
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func doc(hosts ...Host) *Document {
 	d := &Document{APIVersion: APIVersion, Hosts: hosts}
@@ -9,8 +12,8 @@ func doc(hosts ...Host) *Document {
 }
 
 func TestDiffOfIdenticalDocumentsIsEmpty(t *testing.T) {
-	a := doc(Host{Name: "sw1", IP: "10.0.0.1", Monitoring: []MonitoringItem{{Name: "CPU", Interval: 30}}})
-	b := doc(Host{Name: "sw1", IP: "10.0.0.1", Monitoring: []MonitoringItem{{Name: "CPU", Interval: 30}}})
+	a := doc(Host{Name: "sw1", IP: "10.0.0.1", Monitoring: []MonitoringItem{{Name: "CPU", Interval: "30"}}})
+	b := doc(Host{Name: "sw1", IP: "10.0.0.1", Monitoring: []MonitoringItem{{Name: "CPU", Interval: "30"}}})
 	if p := Diff(a, b); !p.Empty() {
 		t.Errorf("expected no steps, got %v", p.Steps)
 	}
@@ -81,10 +84,10 @@ func TestDiffIsDeterministic(t *testing.T) {
 
 func TestMonitoringItemsDiffWithinTheirHost(t *testing.T) {
 	local := doc(Host{Name: "sw1", Monitoring: []MonitoringItem{
-		{Name: "CPU", Interval: 60}, {Name: "Disk"},
+		{Name: "CPU", Interval: "60"}, {Name: "Disk"},
 	}})
 	remote := doc(Host{Name: "sw1", Monitoring: []MonitoringItem{
-		{Name: "CPU", Interval: 30}, {Name: "Memory"},
+		{Name: "CPU", Interval: "30"}, {Name: "Memory"},
 	}})
 	p := Diff(local, remote)
 	create, update, del := p.Counts()
@@ -129,5 +132,99 @@ func TestNormalizeSortsForStableOutput(t *testing.T) {
 	}
 	if d.APIVersion != APIVersion {
 		t.Error("Normalize should fill in the apiVersion")
+	}
+}
+
+// Renaming is the common edit, and it must not destroy the resource. With ids
+// present the diff produces a single update, not a delete plus a create.
+func TestRenameWithIDIsAnUpdate(t *testing.T) {
+	local := doc(Host{ID: "1", Name: "Firewall01", IP: "10.0.0.1"})
+	remote := doc(Host{ID: "1", Name: "FW01", IP: "10.0.0.1"})
+
+	p := Diff(local, remote)
+	create, update, del := p.Counts()
+	if create != 0 || update != 1 || del != 0 {
+		t.Fatalf("a rename should be one update, got %d/%d/%d: %v", create, update, del, p.Steps)
+	}
+	if p.Destructive() {
+		t.Error("renaming must not produce a destructive plan")
+	}
+	step := p.Steps[0]
+	if step.Rename != "FW01" {
+		t.Errorf("the step should record the previous name, got %q", step.Rename)
+	}
+	if step.Body["name"] != "Firewall01" {
+		t.Errorf("the update body must carry the new name, got %v", step.Body["name"])
+	}
+	if !strings.Contains(step.String(), `rename from "FW01"`) {
+		t.Errorf("the plan should read as a rename, got %q", step.String())
+	}
+}
+
+func TestRenameOfMonitoringItemWithID(t *testing.T) {
+	local := doc(Host{ID: "1", Name: "sw1", Monitoring: []MonitoringItem{{ID: "10", Name: "CPU load"}}})
+	remote := doc(Host{ID: "1", Name: "sw1", Monitoring: []MonitoringItem{{ID: "10", Name: "CPU"}}})
+
+	p := Diff(local, remote)
+	create, update, del := p.Counts()
+	if create != 0 || update != 1 || del != 0 {
+		t.Fatalf("expected a single update, got %d/%d/%d: %v", create, update, del, p.Steps)
+	}
+}
+
+// Without ids a rename cannot be distinguished from a replacement, so the plan
+// must at least flag it rather than silently destroying the resource.
+func TestRenameWithoutIDIsDetectedAsLikely(t *testing.T) {
+	local := doc(Host{Name: "Firewall01", IP: "10.0.0.1", Hostname: "fw01"})
+	remote := doc(Host{Name: "FW01", IP: "10.0.0.1", Hostname: "fw01"})
+
+	p := Diff(local, remote)
+	if !p.Destructive() {
+		t.Fatal("without ids this is a delete plus a create")
+	}
+	likely := p.LikelyRenames()
+	if len(likely) != 1 {
+		t.Fatalf("the pair should be flagged as a likely rename, got %v", likely)
+	}
+	if likely[0].From != "FW01" || likely[0].To != "Firewall01" {
+		t.Errorf("unexpected pair: %+v", likely[0])
+	}
+}
+
+// Two genuinely different hosts must not be mistaken for a rename.
+func TestUnrelatedCreateAndDeleteAreNotAName(t *testing.T) {
+	local := doc(Host{Name: "new-sw", IP: "10.0.0.9", Hostname: "new"})
+	remote := doc(Host{Name: "old-sw", IP: "10.0.0.1", Hostname: "old"})
+	if got := Diff(local, remote).LikelyRenames(); len(got) != 0 {
+		t.Errorf("different hosts should not be reported as a rename: %v", got)
+	}
+}
+
+// A stale id must fall back to name matching rather than creating a duplicate.
+func TestStaleIDFallsBackToNameMatch(t *testing.T) {
+	local := doc(Host{ID: "999", Name: "sw1", IP: "10.0.0.2"})
+	remote := doc(Host{ID: "1", Name: "sw1", IP: "10.0.0.1"})
+
+	p := Diff(local, remote)
+	create, update, del := p.Counts()
+	if create != 0 || update != 1 || del != 0 {
+		t.Fatalf("expected a name-matched update, got %d/%d/%d: %v", create, update, del, p.Steps)
+	}
+	if p.Steps[0].ID != "1" {
+		t.Errorf("the update must target the real remote id, got %q", p.Steps[0].ID)
+	}
+}
+
+// Primary-key references must be sent as numbers: the API rejects a string
+// where it expects a pk.
+func TestReferencesAreSentAsNumbers(t *testing.T) {
+	b := itemBody(&MonitoringItem{Name: "ping", Module: "2", Interval: "1", Credential: "7"})
+	for _, k := range []string{"monitoring_module", "interval", "credential"} {
+		if _, ok := b[k].(int); !ok {
+			t.Errorf("%s should be sent as a number, got %T (%v)", k, b[k], b[k])
+		}
+	}
+	if b["name"] != "ping" {
+		t.Errorf("name should stay a string, got %v", b["name"])
 	}
 }

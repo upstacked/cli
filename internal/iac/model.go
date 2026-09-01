@@ -1,11 +1,14 @@
 // Package iac represents an infrastructure as YAML and reconciles it against
 // the platform.
 //
-// Identity is by name within an infrastructure, never by server-assigned id.
-// Ids are allocated by the server, so a document keyed on them could not be
-// authored by hand or meaningfully diffed across environments. The cost of
-// that choice is that renaming a resource reads as delete-plus-create, which
-// the CLI warns about rather than hiding.
+// Identity is resolved by server-assigned id when the document carries one,
+// and by name within the infrastructure otherwise.
+//
+// Export records ids so that renaming works: with only a name to go on, a
+// rename is indistinguishable from "delete this and create that", which
+// destroys monitoring history and is almost never what was meant. A
+// hand-authored document may omit ids entirely and is matched by name, which
+// keeps it portable between environments.
 package iac
 
 import (
@@ -34,6 +37,9 @@ type InfrastructureR struct {
 
 // Host is a monitored device.
 type Host struct {
+	// ID is the server-assigned identity. Present in exported documents so a
+	// rename is a rename; omit it in hand-authored documents to match by name.
+	ID         string           `yaml:"id,omitempty"`
 	Name       string           `yaml:"name"`
 	Hostname   string           `yaml:"hostname,omitempty"`
 	IP         string           `yaml:"ip,omitempty"`
@@ -41,28 +47,19 @@ type Host struct {
 	Type       string           `yaml:"type,omitempty"`
 	Serial     string           `yaml:"serial,omitempty"`
 	Monitoring []MonitoringItem `yaml:"monitoring,omitempty"`
-
-	// id is the server-side identity, populated on export and by diff. It is
-	// deliberately not serialised: the document must stay portable.
-	id string `yaml:"-"`
 }
 
 // MonitoringItem is one check bound to a host.
 type MonitoringItem struct {
-	Name       string `yaml:"name"`
-	Module     string `yaml:"module,omitempty"`
-	Interval   int    `yaml:"interval,omitempty"`
+	ID     string `yaml:"id,omitempty"`
+	Name   string `yaml:"name"`
+	Module string `yaml:"module,omitempty"`
+	// Interval is a reference to a monitoring interval object, not seconds.
+	Interval   string `yaml:"interval,omitempty"`
 	Parameters string `yaml:"parameters,omitempty"`
 	CredType   string `yaml:"credential_type,omitempty"`
 	Credential string `yaml:"credential,omitempty"`
-
-	id string `yaml:"-"`
 }
-
-func (h *Host) SetID(id string)           { h.id = id }
-func (h *Host) ID() string                { return h.id }
-func (m *MonitoringItem) SetID(id string) { m.id = id }
-func (m *MonitoringItem) ID() string      { return m.id }
 
 // Normalize sorts the document so that export output is byte-stable: the same
 // remote state must always produce the same file, or every export would show
@@ -128,6 +125,9 @@ type Step struct {
 	ID string
 	// Fields lists what differs, for update steps.
 	Fields []string
+	// Rename records the previous name when an update changes it, so the plan
+	// can say so plainly instead of showing an opaque "name" field change.
+	Rename string
 	// Body is the payload to send.
 	Body map[string]any
 }
@@ -137,10 +137,38 @@ func (s Step) String() string {
 	if s.Host != "" {
 		label = s.Kind + " " + s.Host + "/" + s.Name
 	}
+	if s.Rename != "" {
+		other := strings.Join(without(s.Fields, "name"), ", ")
+		if other != "" {
+			other = ", " + other
+		}
+		return fmt.Sprintf("%s %s %s rename from %q%s", s.Action, s.Kind, s.Name, s.Rename, other)
+	}
 	if s.Action == ActionUpdate && len(s.Fields) > 0 {
 		return fmt.Sprintf("%s %s (%s)", s.Action, label, strings.Join(s.Fields, ", "))
 	}
 	return fmt.Sprintf("%s %s", s.Action, label)
+}
+
+func without(list []string, drop string) []string {
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		if s != drop {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// Renames returns the steps that change a resource's name.
+func (p *Plan) Renames() []Step {
+	var out []Step
+	for _, s := range p.Steps {
+		if s.Rename != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Plan is an ordered set of steps.
@@ -208,4 +236,60 @@ func (p *Plan) Sort() {
 		}
 		return a.Name < b.Name
 	})
+}
+
+// RenamePair is a create/delete pair that looks like one resource renamed.
+type RenamePair struct {
+	Kind string
+	From string
+	To   string
+}
+
+// LikelyRenames spots a delete and a create that describe the same thing.
+//
+// This happens when a document is hand-authored, or exported and then stripped
+// of its ids: with only names to match on, a rename is indistinguishable from
+// a replacement. Detecting it lets the CLI say so instead of quietly
+// destroying a resource and its history.
+func (p *Plan) LikelyRenames() []RenamePair {
+	var out []RenamePair
+	for _, del := range p.Steps {
+		if del.Action != ActionDelete {
+			continue
+		}
+		for _, add := range p.Steps {
+			if add.Action != ActionCreate || add.Kind != del.Kind || add.Name == del.Name {
+				continue
+			}
+			if sameResource(del, add) {
+				out = append(out, RenamePair{Kind: del.Kind, From: del.Name, To: add.Name})
+			}
+		}
+	}
+	return out
+}
+
+// sameResource reports whether two steps describe the same underlying thing,
+// judged on the identifying fields the document carries.
+func sameResource(a, b Step) bool {
+	keys := []string{"i_ip_address", "i_hostname", "i_serial", "i_mac_address"}
+	if a.Kind == "monitoring" {
+		if a.Host != b.Host {
+			return false
+		}
+		keys = []string{"monitoring_module", "parameters"}
+	}
+	shared := 0
+	for _, k := range keys {
+		av, aok := a.Body[k]
+		bv, bok := b.Body[k]
+		if !aok || !bok {
+			continue
+		}
+		if av != bv {
+			return false
+		}
+		shared++
+	}
+	return shared > 0
 }
