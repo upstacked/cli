@@ -11,6 +11,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The secrets context is not available in a step-level `if`, so the App id
+    # is lifted into the environment where it can be tested.
+    env:
+      TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,10 +35,10 @@ jobs:
       # binaries; only the cask update is deferred.
       - name: Mint a tap token
         id: tap-token
-        if: ${{ secrets.TAP_APP_ID != '' }}
+        if: env.TAP_APP_ID != ''
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.TAP_APP_ID }}
+          app-id: ${{ env.TAP_APP_ID }}
           private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
           owner: upstacked
           repositories: homebrew-tools
@@ -49,7 +53,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
 
       - name: Report tap status
-        if: ${{ secrets.TAP_APP_ID == '' }}
+        if: env.TAP_APP_ID == ''
         run: |
           echo "::warning::TAP_APP_ID is not set, so the Homebrew cask was not updated." \
                "Binaries published normally. See docs/releasing.md."
