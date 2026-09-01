@@ -116,6 +116,11 @@ command layer — is what keeps that possible.
 See [docs/user-stories.md](docs/user-stories.md) for the backlog and the
 reasoning behind each guardrail.
 
+## Releasing
+
+Push a tag; GitHub Actions builds all platforms and updates the Homebrew tap.
+See [docs/releasing.md](docs/releasing.md).
+
 ## License
 
 MIT
