@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/upstacked/cli/internal/errs"
@@ -40,7 +41,11 @@ func newSkillInstallCmd(app *App) *cobra.Command {
 		Use:   "install",
 		Short: "Install or update the agent skill",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			agents, err := skill.ParseAgents(agentsRaw)
+			resolvedRaw, err := resolveAgentsRaw(agentsRaw, cmd.Flags().Changed("agent"), app.Interactive(), app.Prompt)
+			if err != nil {
+				return err
+			}
+			agents, err := skill.ParseAgents(resolvedRaw)
 			if err != nil {
 				return err
 			}
@@ -58,12 +63,27 @@ func newSkillInstallCmd(app *App) *cobra.Command {
 	}
 	scopeFlag(c, &scope)
 	c.Flags().StringVar(&agentsRaw, "agent", "popular",
-		"install target: popular|all|claude|cursor|codex|gemini or comma-separated list")
+		"install target: popular|all|claude|cursor|codex|gemini or comma-separated list (prompted on TTY when omitted)")
 	c.Flags().BoolVar(&force, "force", false, "overwrite local edits to the installed skill")
 	_ = c.RegisterFlagCompletionFunc("agent", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{"popular", "all", "claude", "cursor", "codex", "gemini"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	return c
+}
+
+func resolveAgentsRaw(current string, changed, canPrompt bool, prompt func(string, string) (string, error)) (string, error) {
+	if changed || !canPrompt {
+		return current, nil
+	}
+	v, err := prompt("Install skill for agents", current)
+	if err != nil {
+		return "", err
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return current, nil
+	}
+	return v, nil
 }
 
 func newSkillStatusCmd(app *App) *cobra.Command {

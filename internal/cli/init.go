@@ -37,9 +37,13 @@ safe: steps that are already done are reported and skipped.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			t, sym := app.Theme(), app.Sym()
 			interactive := app.Interactive() && !nonInteract
+			resolvedAgents, err := resolveAgentsRaw(agentsRaw, cmd.Flags().Changed("agent"), interactive, app.Prompt)
+			if err != nil {
+				return err
+			}
 
 			if skillOnly {
-				return installSkillStep(app, scope, agentsRaw, force)
+				return installSkillStep(app, scope, resolvedAgents, force)
 			}
 
 			fmt.Fprintf(app.Stderr, "\n%s\n", t.Bold.Apply("Setting up the Upstacked CLI"))
@@ -127,7 +131,7 @@ safe: steps that are already done are reported and skipped.`,
 
 			// Step 4: agent skill.
 			if !noSkill {
-				if err := installSkillStep(app, scope, agentsRaw, force); err != nil {
+				if err := installSkillStep(app, scope, resolvedAgents, force); err != nil {
 					// A skill conflict must not fail the whole setup.
 					if errs.CodeOf(err) == errs.CodeConflict {
 						fmt.Fprintf(app.Stderr, " %s %v\n", t.Yellow.Apply(sym.Warn), err)
@@ -150,7 +154,7 @@ safe: steps that are already done are reported and skipped.`,
 	c.Flags().BoolVar(&nonInteract, "non-interactive", false, "never prompt; fail instead")
 	c.Flags().BoolVar(&force, "force", false, "overwrite local edits to the installed skill")
 	c.Flags().StringVar(&agentsRaw, "agent", "popular",
-		"skill install target: popular|all|claude|cursor|codex|gemini or comma-separated list")
+		"skill install target: popular|all|claude|cursor|codex|gemini or comma-separated list (prompted on TTY when omitted)")
 	scopeFlag(c, &scope)
 	return c
 }
