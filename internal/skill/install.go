@@ -25,9 +25,40 @@ func markerLine(version, sha string) string {
 }
 
 // wrap renders content with its markers.
+//
+// The begin marker goes *after* any YAML frontmatter. Claude Code and Cursor
+// only parse frontmatter when it is the very first thing in the file, so a
+// marker above it silently turns the skill's name and description into
+// garbage — the skill still installs, and is then useless.
 func wrap(content, version string) string {
 	sha := Checksum(content)
-	return markerLine(version, sha) + "\n" + strings.TrimRight(content, "\n") + "\n" + endMarker + "\n"
+	front, rest := splitFrontmatter(content)
+	return front + markerLine(version, sha) + "\n" + strings.TrimRight(rest, "\n") + "\n" + endMarker + "\n"
+}
+
+// splitFrontmatter separates a leading YAML block from the rest, keeping the
+// trailing newline on the frontmatter so it stays flush with the top.
+func splitFrontmatter(content string) (front, rest string) {
+	if !strings.HasPrefix(content, "---\n") {
+		return "", content
+	}
+	i := strings.Index(content[4:], "\n---\n")
+	if i < 0 {
+		return "", content
+	}
+	end := 4 + i + len("\n---\n")
+	return content[:end], strings.TrimLeft(content[end:], "\n")
+}
+
+// ownedContent returns the part of a file this skill is responsible for, which
+// is the whole thing for a file it owns and just the block for a shared one.
+func ownedContent(t Target, raw, block string) string {
+	if t.Mode != ModeOwnFile {
+		return block
+	}
+	out := markerRe.ReplaceAllString(raw, "")
+	out = strings.ReplaceAll(out, endMarker, "")
+	return out
 }
 
 // State is the installation status of one target.
@@ -81,16 +112,13 @@ func Inspect(t Target, scope Scope, root, version string) (*State, error) {
 	}
 	st.Installed = true
 	st.Version = declaredVersion
-	st.Modified = Checksum(block) != declaredSha
 
-	// For a file this skill owns outright, anything added around the block is
-	// an edit too. Only shared files are expected to have other content.
-	if !st.Modified && t.Mode == ModeOwnFile {
-		st.Modified = strings.TrimSpace(string(raw)) != strings.TrimSpace(wrap(block, declaredVersion))
-	}
-
-	want := t.render(Body())
-	st.Outdated = !st.Modified && Checksum(block) != Checksum(want)
+	// The checksum covers everything this skill owns: the whole file for a
+	// file it owns (frontmatter included, so an edit above the marker counts),
+	// and only the block for a file shared with the user's own instructions.
+	owned := ownedContent(t, string(raw), block)
+	st.Modified = Checksum(owned) != declaredSha
+	st.Outdated = !st.Modified && declaredSha != Checksum(t.render(Body()))
 	st.Current = st.Installed && !st.Modified && !st.Outdated
 	return st, nil
 }
@@ -243,8 +271,13 @@ func stripBlock(content string) string {
 
 // InstalledStates reports every target that has something on disk, across both
 // scopes, so doctor can notice a stale install the user forgot about.
+//
+// Results are deduplicated by resolved path: when the working directory is the
+// home directory the two scopes name the same file, and reporting it twice
+// would suggest two installs that can drift apart.
 func InstalledStates(root, version string) []*State {
 	var out []*State
+	seen := map[string]bool{}
 	for _, t := range Targets {
 		for _, scope := range []Scope{ScopeUser, ScopeProject} {
 			if !t.Supports(scope) {
@@ -254,6 +287,14 @@ func InstalledStates(root, version string) []*State {
 			if err != nil || !st.Installed {
 				continue
 			}
+			abs, err := filepath.Abs(st.Path)
+			if err != nil {
+				abs = st.Path
+			}
+			if seen[abs] {
+				continue
+			}
+			seen[abs] = true
 			out = append(out, st)
 		}
 	}

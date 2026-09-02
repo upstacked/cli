@@ -30,11 +30,16 @@ func TestInstallOwnFileWritesWholeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(b)
-	if !strings.HasPrefix(content, beginMarker) {
-		t.Error("managed content should start with the marker")
+	// Frontmatter must be the very first thing in the file; a marker above it
+	// stops the client parsing it at all.
+	if !strings.HasPrefix(content, "---\n") {
+		t.Error("a Cursor rule must start with its frontmatter, not the marker")
 	}
 	if !strings.Contains(content, "alwaysApply:") {
 		t.Error("a Cursor rule needs its own frontmatter")
+	}
+	if !strings.Contains(content, beginMarker) {
+		t.Error("managed content should carry the marker")
 	}
 	if strings.Contains(content, "name: upstacked\n") {
 		t.Error("Claude Code frontmatter must not leak into other clients")
@@ -229,6 +234,25 @@ func TestClaudeTargetKeepsItsFrontmatter(t *testing.T) {
 	if !strings.Contains(got, "name: "+Name) {
 		t.Error("Claude Code needs the skill frontmatter")
 	}
+	// The regression that made the skill's description render as the marker.
+	if !strings.HasPrefix(got, "---\nname: "+Name) {
+		t.Fatalf("SKILL.md must begin with its frontmatter, got:\n%s", firstLines(got, 3))
+	}
+	fmEnd := strings.Index(got[4:], "\n---\n")
+	if fmEnd < 0 {
+		t.Fatal("frontmatter is not terminated")
+	}
+	if strings.Contains(got[:fmEnd], beginMarker) {
+		t.Error("the marker must not sit inside the frontmatter")
+	}
+}
+
+func firstLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func TestResolveTargets(t *testing.T) {
@@ -289,4 +313,30 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// Running from the home directory makes user and project scope resolve to the
+// same file. Reporting it twice would imply two installs that can drift apart.
+func TestInstalledStatesDeduplicatesByPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(home)
+
+	if _, err := Install(target(t, "claude"), ScopeUser, "", "1.0.0", false); err != nil {
+		t.Fatal(err)
+	}
+	states := InstalledStates("", "1.0.0")
+
+	seen := map[string]int{}
+	for _, st := range states {
+		seen[st.Path]++
+	}
+	for path, n := range seen {
+		if n > 1 {
+			t.Errorf("%s reported %d times; the same file must appear once", path, n)
+		}
+	}
+	if len(states) != 1 {
+		t.Errorf("expected exactly one install, got %d", len(states))
+	}
 }
