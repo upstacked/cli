@@ -12,6 +12,7 @@ import (
 
 func newInitCmd(app *App) *cobra.Command {
 	var (
+		clients     []string
 		apiURL      string
 		username    string
 		scope       string
@@ -38,7 +39,7 @@ safe: steps that are already done are reported and skipped.`,
 			interactive := app.Interactive() && !nonInteract
 
 			if skillOnly {
-				return installSkillStep(app, scope, force)
+				return installSkillStep(app, scope, clients, force)
 			}
 
 			fmt.Fprintf(app.Stderr, "\n%s\n", t.Bold.Apply("Setting up the Upstacked CLI"))
@@ -126,7 +127,7 @@ safe: steps that are already done are reported and skipped.`,
 
 			// Step 4: agent skill.
 			if !noSkill {
-				if err := installSkillStep(app, scope, force); err != nil {
+				if err := installSkillStep(app, scope, clients, force); err != nil {
 					// A skill conflict must not fail the whole setup.
 					if errs.CodeOf(err) == errs.CodeConflict {
 						fmt.Fprintf(app.Stderr, " %s %v\n", t.Yellow.Apply(sym.Warn), err)
@@ -149,17 +150,27 @@ safe: steps that are already done are reported and skipped.`,
 	c.Flags().BoolVar(&nonInteract, "non-interactive", false, "never prompt; fail instead")
 	c.Flags().BoolVar(&force, "force", false, "overwrite local edits to the installed skill")
 	scopeFlag(c, &scope)
+	clientFlag(c, &clients)
 	return c
 }
 
-func installSkillStep(app *App, scope string, force bool) error {
-	t, sym := app.Theme(), app.Sym()
-	st, err := skill.Install(skill.Scope(scope), "", Version, force)
+// installSkillStep offers the client picker during setup, so the skill lands
+// wherever the user actually works rather than assuming one tool.
+func installSkillStep(app *App, scope string, clients []string, force bool) error {
+	sc := skill.Scope(scope)
+	if len(clients) == 0 && !app.Interactive() {
+		// Non-interactive setup still deserves a skill; default to the
+		// broadest useful pair rather than silently installing nothing.
+		clients = skill.DefaultTargets
+	}
+	targets, err := app.chooseTargets(clients, sc)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(app.Stderr, " %s agent skill %s\n", t.Green.Apply(sym.OK), st.Path)
-	return nil
+	if len(targets) == 0 {
+		return nil
+	}
+	return app.installTargets(targets, sc, force)
 }
 
 // promptServer offers the known aliases plus a free-text option.

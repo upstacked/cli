@@ -282,3 +282,146 @@ func Heading(w io.Writer, t *Theme, text string) {
 // This is stricter than checking for a character device: /dev/null is a
 // character device but is emphatically not interactive.
 func IsTerminalFd(fd int) bool { return term.IsTerminal(fd) }
+
+// MultiChoice is one toggleable option in a multi-select prompt.
+type MultiChoice struct {
+	Label    string
+	Desc     string
+	Value    string
+	Selected bool
+	// Disabled options are shown greyed out and cannot be toggled, so the user
+	// can see that a client exists but is unavailable here, and why.
+	Disabled bool
+	Reason   string
+}
+
+// MultiSelect presents a checkbox list. It returns the values of the selected
+// options.
+//
+// Callers must handle the not-a-terminal error by falling back to an explicit
+// flag: an agent or CI run has no way to answer a prompt.
+func MultiSelect(in *os.File, out io.Writer, title string, choices []MultiChoice) ([]string, error) {
+	if len(choices) == 0 {
+		return nil, fmt.Errorf("nothing to choose from")
+	}
+	if !term.IsTerminal(int(in.Fd())) || !IsTerminal(out) {
+		return nil, fmt.Errorf("cannot prompt: not a terminal")
+	}
+
+	state, err := term.MakeRaw(int(in.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	defer term.Restore(int(in.Fd()), state)
+
+	theme := NewTheme(out)
+	sym := NewSymbols(UnicodeOK())
+	unicode := UnicodeOK()
+	checked, unchecked := "[x]", "[ ]"
+	if unicode {
+		checked, unchecked = "◉", "◯"
+	}
+
+	cursor := 0
+	for choices[cursor].Disabled && cursor < len(choices)-1 {
+		cursor++
+	}
+
+	lines := len(choices) + 1 // options plus the help line
+	first := true
+
+	render := func() {
+		if !first {
+			fmt.Fprintf(out, "\x1b[%dA", lines)
+		}
+		first = false
+		for i, c := range choices {
+			box := unchecked
+			if c.Selected {
+				box = theme.Green.Apply(checked)
+			}
+			label := c.Label
+			if c.Desc != "" {
+				label += "  " + theme.Dim.Apply(c.Desc)
+			}
+			if c.Disabled {
+				box = theme.Dim.Apply("  -")
+				label = theme.Dim.Apply(c.Label + "  " + c.Reason)
+			}
+			pointer := "  "
+			if i == cursor {
+				pointer = theme.Cyan.Apply(sym.Pointer) + " "
+				if !c.Disabled {
+					label = theme.Bold.Apply(label)
+				}
+			}
+			fmt.Fprintf(out, "\r\x1b[2K%s%s %s\r\n", pointer, box, label)
+		}
+		fmt.Fprintf(out, "\r\x1b[2K%s\r\n",
+			theme.Dim.Apply("space toggles, a all, n none, enter confirms, esc cancels"))
+	}
+
+	fmt.Fprintf(out, "\r\x1b[2K%s\r\n", theme.Bold.Apply(title))
+	render()
+
+	move := func(delta int) {
+		for i := 0; i < len(choices); i++ {
+			cursor = (cursor + delta + len(choices)) % len(choices)
+			if !choices[cursor].Disabled {
+				return
+			}
+		}
+	}
+
+	buf := make([]byte, 3)
+	for {
+		n, err := in.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case n == 1 && (buf[0] == '\r' || buf[0] == '\n'):
+			var out []string
+			for _, c := range choices {
+				if c.Selected && !c.Disabled {
+					out = append(out, c.Value)
+				}
+			}
+			return out, nil
+		case n == 1 && (buf[0] == 3 || buf[0] == 27):
+			return nil, fmt.Errorf("cancelled")
+		case n == 1 && buf[0] == ' ':
+			if !choices[cursor].Disabled {
+				choices[cursor].Selected = !choices[cursor].Selected
+			}
+			render()
+		case n == 1 && (buf[0] == 'a' || buf[0] == 'A'):
+			for i := range choices {
+				if !choices[i].Disabled {
+					choices[i].Selected = true
+				}
+			}
+			render()
+		case n == 1 && (buf[0] == 'n' || buf[0] == 'N'):
+			for i := range choices {
+				choices[i].Selected = false
+			}
+			render()
+		case n == 1 && buf[0] == 'j':
+			move(1)
+			render()
+		case n == 1 && buf[0] == 'k':
+			move(-1)
+			render()
+		case n == 3 && buf[0] == 27 && buf[1] == '[':
+			switch buf[2] {
+			case 'B':
+				move(1)
+				render()
+			case 'A':
+				move(-1)
+				render()
+			}
+		}
+	}
+}

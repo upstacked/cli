@@ -398,7 +398,7 @@ func TestDoctorPassesOnAHealthySetup(t *testing.T) {
 	e.stub.handle("/api/user/details/v2/", 200, map[string]any{"username": "tester"})
 	e.stub.handle("/api/infrastructure/42/", 200, map[string]any{"id": 42, "name": "Acme"})
 
-	if res := e.run("skill", "install"); res.ExitCode != 0 {
+	if res := e.run("skill", "install", "--client", "claude"); res.ExitCode != 0 {
 		t.Fatalf("skill install failed: %s", res.Stderr)
 	}
 	res := e.run("doctor")

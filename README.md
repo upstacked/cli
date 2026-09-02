@@ -106,15 +106,29 @@ safeguard working; run `ups login` against the new host.
 
 ## The agent skill
 
-The binary embeds an LLM skill and installs it with `ups skill install`
-(`~/.claude/skills/upstacked/`, or `--scope project`). It explains the resource
-model and, more importantly, *why* the workflows are shaped as they are — an
-agent can read `--help` for the how, but cannot derive from any API response
-that deleted monitoring fails silently.
+The binary embeds an LLM skill explaining the resource model and, more
+importantly, *why* the workflows are shaped as they are — an agent can read
+`--help` for the how, but cannot derive from any API response that deleted
+monitoring fails silently.
 
-`ups doctor` reports whether the installed skill is missing, outdated, or
-locally edited, and never overwrites your edits without `--force`. CI fails if
-the skill names a command that does not exist.
+```sh
+ups skill install                        # pick your clients interactively
+ups skill install --client claude,agents # or name them
+ups skill clients                        # what is supported, and where it lands
+```
+
+Claude Code gets a real skill; other tools get the same guidance in their own
+convention — AGENTS.md (Codex, Amp, Zed, opencode), Cursor rules, Copilot
+instructions, Windsurf, Cline, Roo, Continue, Gemini CLI and Junie.
+
+Files you share with your own instructions are edited in place: only a marked
+block is managed, and anything you wrote around it survives both install and
+uninstall.
+
+`ups doctor` reports every client the skill is installed into and whether each
+is missing, outdated, or locally edited — and never overwrites your edits
+without `--force`. CI fails if the skill names a command or flag that does not
+exist.
 
 ## Development
 

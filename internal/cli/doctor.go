@@ -225,29 +225,37 @@ func (a *App) checkInfra() check {
 		fmt.Sprintf("%s %s", id, str(m, "name", "infra_code")), ""}
 }
 
+// checkSkill reports every client the skill is installed into, in either
+// scope. Checking only one client would miss a stale copy in another, which is
+// exactly the copy that would mislead an agent.
 func (a *App) checkSkill(scope skill.Scope) []check {
-	st, err := skill.Inspect(scope, "", Version)
-	if err != nil {
-		return []check{{"agent skill", statusFail, err.Error(), ""}}
-	}
-	switch {
-	case !st.Installed:
-		return []check{{"agent skill", statusFail, "not installed at " + st.Path,
+	states := skill.InstalledStates("", Version)
+	if len(states) == 0 {
+		return []check{{"agent skill", statusFail, "not installed for any LLM client",
 			"run: ups skill install"}}
-	case st.Modified:
-		// A warning, never a failure: the user may have customised it on
-		// purpose, and doctor must not imply their edits will be discarded.
-		return []check{{"agent skill", statusWarn,
-			"installed skill has local edits at " + st.Path,
-			"keep them, or overwrite with: ups skill install --force"}}
-	case st.Outdated || !st.Current:
-		return []check{{"agent skill", statusFail,
-			fmt.Sprintf("installed by %s, this CLI is %s - the guidance may not match the commands",
-				dash(st.InstalledVer), Version),
-			"run: ups skill install --force"}}
-	default:
-		return []check{{"agent skill", statusPass, st.Path, ""}}
 	}
+
+	var out []check
+	for _, st := range states {
+		name := "skill: " + st.Target.ID
+		switch {
+		case st.Modified:
+			// A warning, never a failure: the user may have customised it on
+			// purpose, and doctor must not imply their edits will be discarded.
+			out = append(out, check{name, statusWarn,
+				"locally edited at " + st.Path,
+				"keep them, or overwrite with: ups skill install --client " + st.Target.ID + " --force"})
+		case st.Outdated:
+			out = append(out, check{name, statusFail,
+				fmt.Sprintf("written by %s, this CLI is %s - the guidance may not match the commands",
+					dash(st.Version), Version),
+				"run: ups skill install --client " + st.Target.ID + " --force"})
+		default:
+			out = append(out, check{name, statusPass,
+				string(st.Scope) + " - " + st.Path, ""})
+		}
+	}
+	return out
 }
 
 // renderChecks prints all results, then a summary line.

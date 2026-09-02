@@ -298,5 +298,20 @@ ups doctor                 # verify all of it; non-zero exit if anything is wron
 ups context show           # which server and infrastructure am I pointed at?
 ```
 
-If `ups doctor` reports this skill is outdated, run `ups skill install --force`. A skill
-that describes a different command surface than the installed binary is worse than none.
+This skill installs into whichever LLM clients the user works with — Claude Code gets a
+real skill, and other tools get the same guidance in their own convention:
+
+```
+ups skill install                       # pick clients interactively
+ups skill install --client claude,agents
+ups skill clients                       # what can be installed where
+ups skill status                        # where it is, and whether it is current
+```
+
+Files shared with the user's own instructions (AGENTS.md, GEMINI.md, Copilot instructions)
+are edited in place: only a marked block is managed, and everything around it is left
+alone. Never rewrite one of those files wholesale.
+
+If `ups doctor` reports this skill is outdated, run
+`ups skill install --client <id> --force`. A skill that describes a different command
+surface than the installed binary is worse than none.
