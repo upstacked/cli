@@ -183,14 +183,19 @@ func TestMonitoringItemCreateTestsTheNewItem(t *testing.T) {
 	e.login()
 	e.org("3")
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
-	e.stub.handle("/api/monitoring/item/55/test", 200, map[string]any{"value": 42, "ok": true})
+	e.stub.handleMethod("POST", "/api/monitoring/item/55/test", 201, map[string]any{
+		"description": "Started orchestration monitoring item test", "monitoring_item_result_id": 900,
+	})
+	e.stub.handleMethod("GET", "/api/monitoring/item/results/900/", 200, map[string]any{
+		"status": "success", "result": map[string]any{"value": 42},
+	})
 
 	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--module", "3")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
-	contains(t, res.Stderr, "Test returned data")
-	if got := e.stub.requestsTo("GET", "/api/monitoring/item/55/test"); len(got) != 1 {
+	contains(t, res.Stderr, "Test succeeded")
+	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 1 {
 		t.Error("a newly created monitoring item should be tested automatically")
 	}
 	// The API rejects a create with no organization, host-bound or not.
@@ -210,7 +215,7 @@ func TestMonitoringItemCreateSkipTest(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
-	if got := e.stub.requestsTo("GET", "/api/monitoring/item/55/test"); len(got) != 0 {
+	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 0 {
 		t.Error("--skip-test must suppress the automatic test")
 	}
 }
@@ -429,4 +434,101 @@ func TestDoctorJSONIsMachineReadable(t *testing.T) {
 
 func writeJSON(w http.ResponseWriter, v any) error {
 	return jsonEncode(w, v)
+}
+
+// Running a test enqueues work and writes a result row, so the endpoint is
+// POST-only. Sending GET fails with 405 for every item.
+func TestMonitoringItemTestUsesPostNotGet(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", "/api/monitoring/item/34/test", 201, map[string]any{
+		"monitoring_item_result_id": 900,
+	})
+	e.stub.handleMethod("GET", "/api/monitoring/item/results/900/", 200, map[string]any{
+		"status": "success", "result": map[string]any{"value": 1},
+	})
+
+	res := e.run("monitoring", "item", "test", "34")
+	if res.ExitCode != 0 {
+		t.Fatalf("test failed: %s", res.Stderr)
+	}
+	if got := e.stub.requestsTo("POST", "/api/monitoring/item/34/test"); len(got) != 1 {
+		t.Errorf("expected one POST, got %d", len(got))
+	}
+	if got := e.stub.requestsTo("GET", "/api/monitoring/item/34/test"); len(got) != 0 {
+		t.Error("the test endpoint does not implement GET")
+	}
+}
+
+// The 201 means the agent accepted the job, not that the check collected
+// anything. Reporting it as a pass would report "tested" for a check that
+// failed a second later.
+func TestMonitoringItemTestReportsTheResultNotTheDispatch(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", "/api/monitoring/item/34/test", 201, map[string]any{
+		"monitoring_item_result_id": 900,
+	})
+	e.stub.handleMethod("GET", "/api/monitoring/item/results/900/", 200, map[string]any{
+		"status": "failed", "error": "no response from device",
+	})
+
+	res := e.run("monitoring", "item", "test", "34")
+	if res.ExitCode == 0 {
+		t.Fatalf("a failed test must not exit 0:\n%s%s", res.Stdout, res.Stderr)
+	}
+	contains(t, res.Stderr, "Test failed")
+	contains(t, res.Stderr, "collected nothing")
+}
+
+// A test still running is neither a pass nor a failure, and must not be
+// dressed up as either.
+func TestMonitoringItemTestSaysWhenTheResultHasNotArrived(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", "/api/monitoring/item/34/test", 201, map[string]any{
+		"monitoring_item_result_id": 900,
+	})
+	e.stub.handleMethod("GET", "/api/monitoring/item/results/900/", 200, map[string]any{
+		"status": "in_progress",
+	})
+
+	res := e.run("monitoring", "item", "test", "34", "--wait", "1ms")
+	if res.ExitCode != 0 {
+		t.Fatalf("a queued test is not an error: %s", res.Stderr)
+	}
+	contains(t, res.Stderr, "Still running")
+	notContains(t, res.Stderr, "succeeded")
+}
+
+func TestMonitoringItemTestCanSkipWaiting(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", "/api/monitoring/item/34/test", 201, map[string]any{
+		"monitoring_item_result_id": 900,
+	})
+
+	res := e.run("monitoring", "item", "test", "34", "--wait", "0")
+	if res.ExitCode != 0 {
+		t.Fatalf("test failed: %s", res.Stderr)
+	}
+	if got := e.stub.requestsTo("GET", "/api/monitoring/item/results/900/"); len(got) != 0 {
+		t.Error("--wait 0 must not poll for the result")
+	}
+}
+
+// The item's organization being out of scope is a real 403 on this endpoint;
+// the generic "check your roles" hint sends the user to the wrong place.
+func TestMonitoringItemTestExplainsAnOrganizationScopeFailure(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", "/api/monitoring/item/34/test", 403, map[string]any{
+		"error": "No permission to access this organization",
+	})
+
+	res := e.run("monitoring", "item", "test", "34")
+	if res.ExitCode != errs.CodeAuth {
+		t.Fatalf("expected auth exit %d, got %d: %s", errs.CodeAuth, res.ExitCode, res.Stderr)
+	}
+	contains(t, res.Stderr, "organization may be outside your scope")
 }

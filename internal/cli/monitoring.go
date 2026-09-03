@@ -2,9 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/upstacked/cli/internal/errs"
+)
+
+const (
+	testInProgress   = "in_progress"
+	testPollInterval = 2 * time.Second
+	testWait         = 30 * time.Second
 )
 
 func newMonitoringCmd(app *App) *cobra.Command {
@@ -102,32 +109,136 @@ func newMonItemShowCmd(app *App) *cobra.Command {
 }
 
 func newMonItemTestCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var wait time.Duration
+	c := &cobra.Command{
 		Use:   "test <id>",
-		Short: "Test a monitoring item and show the raw response",
-		Long: `Run a monitoring item once and print what came back.
+		Short: "Test a monitoring item and show what it collected",
+		Long: `Run a monitoring item once and report what came back.
 
 Do this before trusting a new or edited item. A misconfigured item does not
 report an error: it silently collects nothing, or collects the wrong field,
-and the gap only surfaces during an incident it failed to catch.`,
+and the gap only surfaces during an incident it failed to catch.
+
+The test is dispatched to the monitoring agent and runs asynchronously, so
+this waits for the outcome rather than reporting the dispatch as a success.
+Pass --wait 0 to return as soon as it is queued.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := app.Client()
+			m, raw, err := app.testItem(args[0], wait)
 			if err != nil {
 				return err
 			}
-			ctx, cancel := app.Ctx()
-			defer cancel()
-			var raw jsonRaw
-			err = app.Spin("Testing monitoring item "+args[0], func() error {
-				return c.Do(ctx, request("GET", "/api/monitoring/item/"+args[0]+"/test", nil), &raw)
-			})
-			if err != nil {
-				return err
+			if app.AsJSON {
+				return app.Printer.Object(raw, nil)
 			}
-			return app.Printer.Object(raw, nil)
+			return app.reportTestOutcome(m, raw, args[0])
 		},
 	}
+	c.Flags().DurationVar(&wait, "wait", 30*time.Second,
+		"how long to wait for the result (0 returns once the test is queued)")
+	return c
+}
+
+// testItem dispatches a test and waits for the outcome.
+//
+// The endpoint is POST, not GET: running a test enqueues work and writes a
+// result row. The 201 only means the monitoring agent accepted the job, so
+// reporting on it alone would report "tested" for a check that later failed,
+// which is the exact confusion this command exists to remove.
+func (a *App) testItem(id string, wait time.Duration) (row, jsonRaw, error) {
+	cl, err := a.Client()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var dispatch jsonRaw
+	err = a.Spin("Testing monitoring item "+id, func() error {
+		ctx, cancel := a.Ctx()
+		defer cancel()
+		return cl.Do(ctx, request("POST", "/api/monitoring/item/"+id+"/test", nil), &dispatch)
+	})
+	if err != nil {
+		return nil, nil, describeTestFailure(err, id)
+	}
+	var m row
+	_ = jsonUnmarshal(dispatch, &m)
+
+	resultID := str(m, "monitoring_item_result_id")
+	if wait <= 0 || resultID == "" {
+		return m, dispatch, nil
+	}
+
+	path := "/api/monitoring/item/results/" + resultID + "/"
+	deadline := time.Now().Add(wait)
+	var last row
+	var lastRaw jsonRaw
+	err = a.Spin("Waiting for the result", func() error {
+		for {
+			got, raw, err := a.getOne(path, nil)
+			if err != nil {
+				return err
+			}
+			last, lastRaw = got, raw
+			if str(got, "status") != testInProgress {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				return nil
+			}
+			time.Sleep(testPollInterval)
+		}
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return last, lastRaw, nil
+}
+
+// reportTestOutcome prints the result and fails the command when the check did
+// not collect anything, so a script notices.
+func (a *App) reportTestOutcome(m row, raw jsonRaw, itemID string) error {
+	t, sym := a.Theme(), a.Sym()
+	status := str(m, "status")
+
+	switch status {
+	case "success":
+		fmt.Fprintf(a.Stderr, "%s Test succeeded.\n", t.Green.Apply(sym.OK))
+	case "partial":
+		fmt.Fprintf(a.Stderr, "%s Test returned only part of what it asked for.\n",
+			t.Yellow.Apply(sym.Warn))
+	case "failed":
+		fmt.Fprintf(a.Stderr, "%s Test failed.\n", t.Red.Apply(sym.Fail))
+	case testInProgress:
+		fmt.Fprintf(a.Stderr, "%s Still running. The test was queued but has not reported back.\n",
+			t.Yellow.Apply(sym.Warn))
+		fmt.Fprintf(a.Stderr, "  %s ups monitoring item results %s\n", t.Dim.Apply("check later:"), itemID)
+		return a.Printer.Object(raw, nil)
+	case "":
+		// --wait 0, or a server that answered without a result id.
+		return a.Printer.Object(raw, nil)
+	}
+
+	if err := a.Printer.Object(raw, nil); err != nil {
+		return err
+	}
+	if status == "failed" {
+		return errs.General("monitoring item %s collected nothing", itemID).
+			WithHint("an item that collects nothing never alerts. Fix it or remove it")
+	}
+	return nil
+}
+
+// describeTestFailure adds the context the generic HTTP mapping cannot know.
+func describeTestFailure(err error, id string) error {
+	switch errs.CodeOf(err) {
+	case errs.CodeAuth:
+		return errs.Auth("cannot test monitoring item %s: %v", id, err).
+			WithHint("the item's organization may be outside your scope. Compare 'ups monitoring item show %s' with 'ups whoami'", id)
+	case errs.CodeUsage:
+		return errs.Usage("cannot test monitoring item %s: %v", id, err).
+			WithHint("a missing monitoring agent on the infrastructure reports as a validation error here; check that the UMA is provisioned")
+	}
+	return err
 }
 
 func newMonItemResultsCmd(app *App) *cobra.Command {
@@ -232,25 +343,21 @@ because there is nothing to poll until it is applied.`,
 					t.Yellow.Apply(sym.Warn), id)
 				return nil
 			}
-			cl, err := app.Client()
-			if err != nil {
-				return err
-			}
-			ctx, cancel := app.Ctx()
-			defer cancel()
-			var testRaw jsonRaw
-			terr := app.Spin("Testing the new item", func() error {
-				return cl.Do(ctx, request("GET", "/api/monitoring/item/"+id+"/test", nil), &testRaw)
-			})
+			// The item exists either way, so a failing test is reported and
+			// does not fail the command - but it is never reported as a pass.
+			testRow, testRaw, terr := app.testItem(id, testWait)
 			if terr != nil {
-				fmt.Fprintf(app.Stderr, "%s The item was created but the test failed: %v\n",
+				fmt.Fprintf(app.Stderr, "%s The item was created but could not be tested: %v\n",
 					t.Yellow.Apply(sym.Warn), terr)
 				fmt.Fprintf(app.Stderr, "  %s an item that collects nothing never alerts. Fix it or remove it.\n",
 					t.Dim.Apply("why it matters:"))
 				return nil
 			}
-			fmt.Fprintf(app.Stderr, "%s Test returned data.\n", t.Green.Apply(sym.OK))
-			return app.Printer.Object(testRaw, nil)
+			if err := app.reportTestOutcome(testRow, testRaw, id); err != nil {
+				fmt.Fprintf(app.Stderr, "  %s the item exists. Fix it or remove it: ups monitoring item delete %s\n",
+					t.Dim.Apply("next:"), id)
+			}
+			return nil
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "host id (mutually exclusive with --template)")

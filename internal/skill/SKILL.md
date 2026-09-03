@@ -91,7 +91,14 @@ or remove it, and tell the user; do not leave it and move on.
 ```
 ups monitoring item create --host <id> --name "CPU" --module <id>   # creates, then tests
 ups monitoring item test <item-id>                                  # re-test an existing item
+ups monitoring item results <item-id>                               # the most recent result
 ```
+
+The test runs on the monitoring agent, asynchronously. The server accepting the job is not
+the same as the check collecting anything, so `ups` waits for the real outcome and reports
+that — success, partial, failed, or still running. A failed test exits non-zero. `--wait 0`
+returns as soon as the test is queued, and then only `ups monitoring item results` can tell
+you what happened.
 
 The API cannot test a configuration that has not been saved, so there is no way to check
 one before creating it. `--skip-test` exists, but using it means nobody has confirmed the
