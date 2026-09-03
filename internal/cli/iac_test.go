@@ -150,6 +150,7 @@ func TestApplyCreatesAndUpdates(t *testing.T) {
 		[]any{map[string]any{"id": 1, "name": "core-sw-01", "i_ip_address": "10.0.0.1"}},
 		[]any{},
 	)
+	e.org("3")
 	e.stub.handleMethod("PATCH", "/api/host/1/", 200, map[string]any{"id": 1})
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 99})
 
@@ -175,8 +176,13 @@ hosts:
 	if got := e.stub.requestsTo("PATCH", "/api/host/1/"); len(got) != 1 {
 		t.Errorf("expected the host to be updated, saw %d PATCH requests", len(got))
 	}
-	if got := e.stub.requestsTo("POST", "/api/monitoring/items/"); len(got) != 1 {
-		t.Errorf("expected the monitoring item to be created, saw %d", len(got))
+	got := e.stub.requestsTo("POST", "/api/monitoring/items/")
+	if len(got) != 1 {
+		t.Fatalf("expected the monitoring item to be created, saw %d", len(got))
+	}
+	// A create with no organization is refused by the API outright.
+	if got[0].Body["organization"] != float64(3) {
+		t.Errorf("expected the create to carry an organization, got %v", got[0].Body)
 	}
 }
 

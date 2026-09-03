@@ -181,7 +181,8 @@ func TestDryRunPerformsNoWrite(t *testing.T) {
 func TestMonitoringItemCreateTestsTheNewItem(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handle("/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
+	e.org("3")
+	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
 	e.stub.handle("/api/monitoring/item/55/test", 200, map[string]any{"value": 42, "ok": true})
 
 	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--module", "3")
@@ -192,12 +193,18 @@ func TestMonitoringItemCreateTestsTheNewItem(t *testing.T) {
 	if got := e.stub.requestsTo("GET", "/api/monitoring/item/55/test"); len(got) != 1 {
 		t.Error("a newly created monitoring item should be tested automatically")
 	}
+	// The API rejects a create with no organization, host-bound or not.
+	got := e.stub.requestsTo("POST", "/api/monitoring/items/")
+	if len(got) != 1 || got[0].Body["organization"] != float64(3) {
+		t.Errorf("expected the create to carry an organization, got %v", got)
+	}
 }
 
 func TestMonitoringItemCreateSkipTest(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handle("/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
+	e.org("3")
+	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
 
 	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--skip-test")
 	if res.ExitCode != 0 {

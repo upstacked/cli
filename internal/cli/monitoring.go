@@ -174,16 +174,22 @@ because there is nothing to poll until it is applied.`,
 				return errs.Usage("exactly one of --host or --template is required").
 					WithHint("--host adds a check to one device; --template adds it to every device the template is applied to")
 			}
+			// The API requires an organization on every item, host-bound or
+			// not: its permission check reads the field straight off the body
+			// and rejects the request outright when it is absent.
 			body := map[string]any{"name": name}
+			var orgID string
+			var err error
 			if host != "" {
 				body["host"] = atoiOr(host)
+				orgID, err = app.resolveOrganization(org)
 			} else {
-				orgID, err := app.templateItemOrg(template, module, org)
-				if err != nil {
-					return err
-				}
-				body["organization"] = atoiOr(orgID)
+				orgID, err = app.templateItemOrg(template, module, org)
 			}
+			if err != nil {
+				return err
+			}
+			body["organization"] = atoiOr(orgID)
 			if module != "" {
 				body["monitoring_module"] = atoiOr(module)
 			}
@@ -249,7 +255,7 @@ because there is nothing to poll until it is applied.`,
 	}
 	c.Flags().StringVar(&host, "host", "", "host id (mutually exclusive with --template)")
 	c.Flags().StringVar(&template, "template", "", "add the item to this monitoring template instead of a host")
-	c.Flags().StringVar(&org, "org", "", "organization id for a template item (defaults to yours when you belong to exactly one)")
+	c.Flags().StringVar(&org, "org", "", "organization id (defaults to yours when you belong to exactly one)")
 	c.Flags().StringVar(&name, "name", "", "item name (required)")
 	c.Flags().StringVar(&module, "module", "", "monitoring module id")
 	c.Flags().StringVar(&params, "params", "", "module parameters")

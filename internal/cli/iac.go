@@ -453,12 +453,8 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 		switch {
 		case s.Kind == "template" && s.Action == iac.ActionCreate:
 			body := copyBody(s.Body)
-			if _, ok := body["organization"]; !ok {
-				var org string
-				if org, err = a.resolveOrganization(""); err != nil {
-					return err
-				}
-				body["organization"] = atoiOr(org)
+			if err = a.withOrganization(body); err != nil {
+				return err
 			}
 			var raw jsonRaw
 			if err = a.mutate("POST", templatesPath, body, &raw); err == nil {
@@ -473,12 +469,8 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 			// A check is a monitoring item with no host: the template stamps
 			// it onto one later, so there is nothing to test here.
 			body := copyBody(s.Body)
-			if _, ok := body["organization"]; !ok {
-				var org string
-				if org, err = a.resolveOrganization(""); err != nil {
-					return err
-				}
-				body["organization"] = atoiOr(org)
+			if err = a.withOrganization(body); err != nil {
+				return err
 			}
 			err = a.mutate("POST", "/api/monitoring/items/", body, nil)
 		case s.Kind == "check" && s.Action == iac.ActionUpdate:
@@ -514,6 +506,9 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 				}
 			}
 			body["host"] = atoiOr(hostID)
+			if err = a.withOrganization(body); err != nil {
+				return err
+			}
 			err = a.mutate("POST", "/api/monitoring/items/", body, nil)
 		case s.Kind == "monitoring" && s.Action == iac.ActionUpdate:
 			err = a.mutate("PATCH", "/api/monitoring/items/"+s.ID+"/", s.Body, nil)
@@ -530,6 +525,21 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 		fmt.Fprintf(a.Stderr, "  %s %s\n", t.Green.Apply(sym.OK), s.String())
 	}
 	fmt.Fprintf(a.Stderr, "\n%s Applied %d change(s).\n", t.Green.Apply(sym.OK), len(plan.Steps))
+	return nil
+}
+
+// withOrganization fills in the organization a create needs when the document
+// did not name one. Monitoring items and templates are both rejected outright
+// without it: the permission check reads the field off the request body.
+func (a *App) withOrganization(body map[string]any) error {
+	if _, ok := body["organization"]; ok {
+		return nil
+	}
+	org, err := a.resolveOrganization("")
+	if err != nil {
+		return err
+	}
+	body["organization"] = atoiOr(org)
 	return nil
 }
 

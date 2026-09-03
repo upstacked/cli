@@ -97,6 +97,11 @@ The API cannot test a configuration that has not been saved, so there is no way 
 one before creating it. `--skip-test` exists, but using it means nobody has confirmed the
 check works.
 
+Every monitoring item belongs to an organization, and the API refuses a create without one.
+`ups` fills it in when you belong to exactly one; when you belong to several it stops and
+asks for `--org` rather than picking. That is not a guess worth making — an item filed under
+the wrong organization is invisible to the people who should see it.
+
 ### Applying a monitoring template replaces a host's monitoring
 
 A template is the set of checks a kind of device gets. Applying one is **not a merge**:

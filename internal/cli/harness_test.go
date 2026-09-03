@@ -254,3 +254,17 @@ func notContains(t *testing.T, haystack, needle string) {
 func jsonEncode(w interface{ Write([]byte) (int, error) }, v any) error {
 	return json.NewEncoder(w).Encode(v)
 }
+
+// org registers the caller as belonging to exactly one organization.
+//
+// Every monitoring item and template create needs one: the API's permission
+// check reads `organization` off the request body and rejects the request when
+// it is absent. Tests that create either must set this up, or they assert
+// against a request the real server would refuse.
+func (e *env) org(id string) {
+	e.t.Helper()
+	e.stub.handleMethod("GET", "/api/user/details/v2/", 200, map[string]any{
+		"user":          map[string]any{"username": "tester"},
+		"organizations": map[string]any{id: map[string]any{"id": atoiOr(id), "name": "Acme"}},
+	})
+}
