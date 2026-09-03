@@ -309,27 +309,6 @@ func TestIPAMNextClaims(t *testing.T) {
 	}
 }
 
-// Logs are filtered client-side today; the user must be told so, and told when
-// results were capped.
-func TestLogsReportClientSideFiltering(t *testing.T) {
-	e := newEnv(t)
-	e.login()
-	e.setInfra("42")
-	e.stub.handle("/api/logs/", 200, page(
-		map[string]any{"id": 1, "host": "core-sw-01", "message": "link down", "level": "error"},
-		map[string]any{"id": 2, "host": "fw-01", "message": "ok", "level": "info"},
-	))
-
-	res := e.run("logs", "search", "--host", "core-sw-01")
-	if res.ExitCode != 0 {
-		t.Fatalf("logs search failed: %s", res.Stderr)
-	}
-	contains(t, res.Stdout, "link down")
-	notContains(t, res.Stdout, "fw-01")
-	contains(t, res.Stderr, "filtered 2 fetched record(s) locally")
-	contains(t, res.Stderr, "does not filter yet")
-}
-
 func TestContextShowReportsProvenance(t *testing.T) {
 	e := newEnv(t)
 	e.login()

@@ -12363,6 +12363,34 @@ paths:
       responses:
         '200':
           description: No response body
+  /api/logs/search/:
+    post:
+      operationId: logs_search_create
+      description: Search customer log data (syslog, flow and monitoring) in Elasticsearch.
+      tags:
+      - logs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogSearchRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LogSearchRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LogSearchRequest'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogSearch'
+          description: ''
   /api/maintenance/:
     get:
       operationId: maintenance_list
@@ -35912,23 +35940,23 @@ components:
     CredentialBulkCreate:
       type: object
       properties:
-        credential_type:
-          type: string
         scope:
           $ref: '#/components/schemas/ScopeEnum'
-        id:
-          type: integer
-          readOnly: true
         tag:
+          type: string
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        credential_type:
           type: string
         users_list:
           type: array
           items:
             type: integer
           nullable: true
-        owner:
-          allOf:
-          - $ref: '#/components/schemas/User'
+        id:
+          type: integer
           readOnly: true
         name:
           type: string
@@ -35948,12 +35976,12 @@ components:
     CredentialBulkCreateRequest:
       type: object
       properties:
-        credential_type:
-          type: string
-          minLength: 1
         scope:
           $ref: '#/components/schemas/ScopeEnum'
         tag:
+          type: string
+          minLength: 1
+        credential_type:
           type: string
           minLength: 1
         users_list:
@@ -38134,6 +38162,12 @@ components:
       - fields
       - name
       - organization
+    DatasetsEnum:
+      enum:
+      - flow
+      - monitoring
+      - syslog
+      type: string
     Deal:
       type: object
       properties:
@@ -43120,6 +43154,96 @@ components:
       - dc
       - cloud
       type: string
+    LogSearch:
+      type: object
+      description: Query parameters for POST /api/logs/search/.
+      properties:
+        infrastructures:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+        datasets:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetsEnum'
+        query:
+          type: string
+          maxLength: 2048
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        severity:
+          type: array
+          items:
+            type: string
+            maxLength: 64
+        hosts:
+          type: array
+          items:
+            type: string
+            maxLength: 255
+        size:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+        sort:
+          allOf:
+          - $ref: '#/components/schemas/SortEnum'
+          default: desc
+        search_after:
+          type: array
+          items: {}
+    LogSearchRequest:
+      type: object
+      description: Query parameters for POST /api/logs/search/.
+      properties:
+        infrastructures:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+        datasets:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetsEnum'
+        query:
+          type: string
+          maxLength: 2048
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        severity:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        hosts:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 255
+        size:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+        sort:
+          allOf:
+          - $ref: '#/components/schemas/SortEnum'
+          default: desc
+        search_after:
+          type: array
+          items: {}
     LoggingAgent:
       type: object
       properties:
@@ -61281,6 +61405,11 @@ components:
       enum:
       - GET
       - WALK
+      type: string
+    SortEnum:
+      enum:
+      - asc
+      - desc
       type: string
     Source13fEnum:
       enum:

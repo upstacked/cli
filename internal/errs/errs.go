@@ -24,6 +24,11 @@ type Error struct {
 	Msg    string
 	Hint   string
 	Causer error
+	// Status is the HTTP status this error came from, when it came from one.
+	// The exit code alone cannot answer "does this server have that endpoint?":
+	// a missing endpoint and a missing record are both CodeNotFound. A caller
+	// that must degrade to an older API needs to tell those apart.
+	Status int
 }
 
 func (e *Error) Error() string { return e.Msg }
@@ -44,6 +49,12 @@ func (e *Error) Wrapping(err error) *Error {
 	return e
 }
 
+// WithStatus records the HTTP status the error was built from.
+func (e *Error) WithStatus(status int) *Error {
+	e.Status = status
+	return e
+}
+
 func Usage(format string, args ...any) *Error    { return New(CodeUsage, format, args...) }
 func Auth(format string, args ...any) *Error     { return New(CodeAuth, format, args...) }
 func NotFound(format string, args ...any) *Error { return New(CodeNotFound, format, args...) }
@@ -60,6 +71,16 @@ func CodeOf(err error) int {
 		return e.Code
 	}
 	return CodeGeneral
+}
+
+// StatusOf extracts the HTTP status behind an error, or 0 when it did not
+// come from an HTTP response.
+func StatusOf(err error) int {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Status
+	}
+	return 0
 }
 
 // HintOf extracts the remedy line, if any.

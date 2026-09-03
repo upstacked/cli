@@ -278,20 +278,49 @@ restore the `id:` field instead.
 Drop the ids only when you deliberately want a portable template to apply to a *different*
 infrastructure.
 
-## Logs: filtering is client-side right now
+## Logs: two backends, and you must read which one answered
 
-The log API is not built yet. `ups logs` reads `/api/logs/`, which accepts **no query
-parameters** — the CLI fetches and filters locally.
+There are two log APIs, and which one answers depends on the server:
 
-Consequences you must account for:
+- **`POST /api/logs/search/`** searches Elasticsearch. Filters, time bounds and ordering
+  are applied server-side, across the whole index.
+- **`GET /api/logs/`** is the original endpoint. It accepts **no query parameters**, so
+  the CLI fetches records and filters them locally.
 
-- Filtering is not free. Never call `ups logs` in a loop over many hosts; fetch once and
-  narrow with `--text` or `--host`.
-- Always bound the query with `--limit` and `--since`. `ups` caps traversal and reports
-  when results were truncated. Truncated is not "no matches" — pass that distinction on to
-  the user rather than reporting an empty result as conclusive.
-- Do not promise a filter that is not applied server-side; the set may be incomplete in
-  ways client-side filtering cannot detect.
+`ups logs search` tries the search endpoint and falls back when the server does not have
+it. The fallback is reported on stderr, never silent. **Read that line before you trust
+the result**, because the two backends answer different questions:
+
+| | Search endpoint | Fallback |
+|---|---|---|
+| Scope | the whole index | only the records one fetch returned |
+| `--host` | exact host match | substring match |
+| `--query`, `--dataset`, `--sort` | applied | **ignored, and named on stderr** |
+| An empty result means | nothing in the index matched | nothing *fetched* matched |
+
+That last row is the one that matters. On the fallback, a client-side filter cannot match
+a record it never fetched, so an empty result is not evidence that nothing else matched.
+Say so when you report it rather than presenting it as conclusive.
+
+Only a missing endpoint (404/405/501) causes a fallback. A rejected query, an auth failure
+or a broken index fails the command — a failing search is never downgraded into a quiet
+one.
+
+Flags:
+
+- `--query` takes an Elasticsearch query string; `--text` is the plain-substring form and
+  works on both backends.
+- `--dataset` is `flow`, `monitoring` or `syslog`, repeatable. `--host` and `--level` are
+  repeatable too.
+- `--since` and `--until` take either a duration (`1h`) or a timestamp (`2026-09-04T08:00:00Z`).
+- `--search-mode server` refuses to fall back — use it when a weaker answer would be worse
+  than no answer. `--search-mode client` forces the old path.
+- Always bound the query with `--limit`. `ups` caps traversal and reports when results were
+  truncated. Truncated is not "no matches" — pass that distinction on to the user.
+
+The search endpoint scopes by numeric infrastructure id, so an infrastructure must be
+selected; `ups` refuses to send an unscoped search rather than widening it to everything
+you can read.
 
 There is no log-based device discovery. Discovery is topology scanning — see `ups discovery`.
 

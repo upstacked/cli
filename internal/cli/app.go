@@ -52,6 +52,9 @@ type App struct {
 	client *api.Client
 	theme  *ui.Theme
 	sym    ui.Symbols
+	// logs remembers which log API this server has, so a polling command does
+	// not re-probe a missing endpoint on every tick.
+	logs logBackend
 }
 
 // Theme returns the colour theme for stderr-facing UI.

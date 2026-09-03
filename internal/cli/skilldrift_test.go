@@ -115,6 +115,10 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		{"cross-customer ambiguity", "wrong customer's device"},
 		{"doctor vs healthcheck", "ups infra healthcheck"},
 		{"client-side log filtering", "no query"},
+		// Two log backends print the same table and mean different things.
+		// An agent that cannot tell them apart will report a capped local
+		// filter as a conclusive index search.
+		{"log fallback is not an index search", "never fetched"},
 		// An agent runs without a TTY, so the confirmation and login rules are
 		// the difference between working and failing on the first mutation.
 		{"no-TTY operation", "without a terminal"},

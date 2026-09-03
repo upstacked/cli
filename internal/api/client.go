@@ -272,29 +272,35 @@ func (c *Client) GetList(ctx context.Context, r Request, limit int) (*List, erro
 }
 
 // httpError turns a status code into an actionable, exit-coded error (X5, X6).
+//
+// The status is carried on the error as well as the exit code, because a
+// caller that supports more than one generation of the API has to distinguish
+// "this server does not have that endpoint" from "that record does not exist".
 func httpError(r Request, status int, body []byte) error {
 	detail := extractDetail(body)
+	var e *errs.Error
 	switch {
 	case status == http.StatusUnauthorized:
-		return errs.Auth("not authenticated (%s)", orDefault(detail, "401")).
+		e = errs.Auth("not authenticated (%s)", orDefault(detail, "401")).
 			WithHint("run: ups login")
 	case status == http.StatusForbidden:
-		return errs.Auth("permission denied for %s (%s)", r.Path, orDefault(detail, "403")).
+		e = errs.Auth("permission denied for %s (%s)", r.Path, orDefault(detail, "403")).
 			WithHint("check your roles: ups whoami")
 	case status == http.StatusNotFound:
-		return errs.NotFound("not found: %s%s", r.Path, parenthetical(detail)).
+		e = errs.NotFound("not found: %s%s", r.Path, parenthetical(detail)).
 			WithHint("verify the id and the active context: ups context show")
 	case status == http.StatusConflict, status == http.StatusPreconditionFailed:
-		return errs.Conflict("conflict on %s%s", r.Path, parenthetical(detail))
+		e = errs.Conflict("conflict on %s%s", r.Path, parenthetical(detail))
 	case status == http.StatusTooManyRequests:
-		return errs.General("rate limited by the server").
+		e = errs.General("rate limited by the server").
 			WithHint("wait and retry, or reduce concurrency")
 	case status >= 500:
-		return errs.General("server error %d from %s%s", status, r.Path, parenthetical(detail)).
+		e = errs.General("server error %d from %s%s", status, r.Path, parenthetical(detail)).
 			WithHint("this is a server-side failure; retry, then report it if it persists")
 	default:
-		return errs.Usage("request rejected (%d) for %s%s", status, r.Path, parenthetical(detail))
+		e = errs.Usage("request rejected (%d) for %s%s", status, r.Path, parenthetical(detail))
 	}
+	return e.WithStatus(status)
 }
 
 // extractDetail pulls a human message out of an error body.
