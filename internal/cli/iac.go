@@ -67,8 +67,16 @@ func (a *App) exportInfra(infraID string) (*iac.Document, error) {
 		APIVersion:     iac.APIVersion,
 		Infrastructure: iac.InfrastructureR{ID: infraID, Name: infraName},
 	}
+	used := map[string]bool{}
 	for _, m := range decodeRows(hosts.Items) {
 		id := str(m, "id")
+		tpl := str(m, "monitoring_template_name")
+		if tpl == "" {
+			tpl = str(m, "monitoring_template")
+		}
+		if tpl != "" {
+			used[tpl] = true
+		}
 		doc.Hosts = append(doc.Hosts, iac.Host{
 			ID:         id,
 			Name:       str(m, "name"),
@@ -77,11 +85,69 @@ func (a *App) exportInfra(infraID string) (*iac.Document, error) {
 			MAC:        str(m, "i_mac_address"),
 			Type:       str(m, "i_type"),
 			Serial:     str(m, "i_serial"),
+			Template:   tpl,
 			Monitoring: byHost[id],
 		})
 	}
+
+	// Only the templates these hosts actually use. Templates are an
+	// organization-wide library; exporting the whole library into every
+	// infrastructure's document would have each infrastructure's apply
+	// fighting the others over resources it does not own.
+	tpls, err := a.exportTemplates(used)
+	if err != nil {
+		return nil, err
+	}
+	doc.Templates = tpls
+
 	doc.Normalize()
 	return doc, nil
+}
+
+// exportTemplates reads the named templates and the host-less checks inside
+// them.
+func (a *App) exportTemplates(used map[string]bool) ([]iac.Template, error) {
+	if len(used) == 0 {
+		return nil, nil
+	}
+	rows, err := a.fetchRows(templatesPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out []iac.Template
+	for _, m := range rows {
+		name := str(m, "name")
+		if !used[name] && !used[str(m, "id")] {
+			continue
+		}
+		id := str(m, "id")
+		t := iac.Template{
+			ID:           id,
+			Name:         name,
+			Status:       str(m, "published_status"),
+			Organization: str(m, "organization"),
+			Modules:      moduleIDs(m),
+		}
+		q := url.Values{}
+		q.Set("monitoring_template", id)
+		checks, err := a.fetchRows("/api/monitoring/items/", q)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range checks {
+			t.Checks = append(t.Checks, iac.MonitoringItem{
+				ID:         str(c, "id"),
+				Name:       str(c, "name"),
+				Module:     str(c, "monitoring_module"),
+				Interval:   str(c, "interval"),
+				Parameters: str(c, "parameters"),
+				CredType:   str(c, "credential_type"),
+				Credential: str(c, "credential"),
+			})
+		}
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 func newExportCmd(app *App) *cobra.Command {
@@ -92,13 +158,21 @@ func newExportCmd(app *App) *cobra.Command {
 		Long: `Write the live state of an infrastructure to YAML you can commit.
 
 --out takes either a file or a directory. A directory gives one file per
-host, which keeps git diffs small and reviewable on a real infrastructure:
+host and one per monitoring template, which keeps git diffs small and
+reviewable on a real infrastructure:
 
   infra/
     infrastructure.yaml
+    templates/
+      cisco-ios-switch.yaml
     hosts/
       core-sw-01.yaml
       fw-01.yaml
+
+A host carrying a template records it in a template: field, and only the
+templates the hosts actually use are exported. Editing a check in the
+template file is then one small diff instead of the same edit repeated on
+every host.
 
 Output is sorted, and filenames are derived from host names, so re-exporting
 unchanged state produces identical bytes. If it did not, every export would
@@ -225,14 +299,34 @@ func (a *App) renderPlan(plan *iac.Plan, infraID string) {
 		case iac.ActionDelete:
 			fmt.Fprintf(a.Stdout, "  %s %s\n", t.Red.Apply("-"), s.String())
 		}
+		// A template assignment reads as a one-field update but removes every
+		// check on the host. Name them under the step, or the plan understates
+		// what it does by an order of magnitude.
+		for _, gone := range s.Replaces {
+			fmt.Fprintf(a.Stdout, "      %s %s (removed by the template change)\n",
+				t.Red.Apply("-"), gone)
+		}
 	}
 	create, update, del := plan.Counts()
 	fmt.Fprintf(a.Stdout, "\n%d to create, %d to update, %d to delete.\n", create, update, del)
+	if repl := plan.Replacements(); len(repl) > 0 {
+		n := 0
+		for _, s := range repl {
+			n += len(s.Replaces)
+		}
+		fmt.Fprintf(a.Stdout, "%s %d existing monitoring item(s) will be replaced by a template.\n",
+			t.Red.Apply(sym.Warn), n)
+	}
+	if plan.TouchesTemplates() {
+		fmt.Fprintf(a.Stdout, "\n%s %s\n", t.Yellow.Apply(sym.Warn),
+			t.Bold.Apply("Templates belong to the organization, not to this infrastructure."))
+		fmt.Fprintf(a.Stdout, "  Editing one here changes it everywhere it is used, including hosts this document does not list.\n")
+	}
 	if renames := plan.Renames(); len(renames) > 0 {
 		fmt.Fprintf(a.Stdout, "\n%s %d rename(s) will keep the existing resource and its history.\n",
 			t.Green.Apply(sym.OK), len(renames))
 	}
-	if del > 0 {
+	if del > 0 || len(plan.Replacements()) > 0 {
 		fmt.Fprintf(a.Stdout, "\n%s %s\n", t.Red.Apply(sym.Warn),
 			t.Bold.Apply("Deleting monitoring is silent: nothing alerts when a check disappears."))
 		fmt.Fprintf(a.Stdout, "  Read the deletions above. If they were not intended, the document is wrong.\n")
@@ -313,8 +407,13 @@ document is wrong.`,
 			}
 
 			if plan.Destructive() && !allowDelete {
-				return errs.Conflict("the plan deletes %d resource(s)", len(plan.Deletions())).
-					WithHint("review them above. If they are intended, re-run with --allow-delete")
+				if n := len(plan.Deletions()); n > 0 {
+					return errs.Conflict("the plan deletes %d resource(s)", n).
+						WithHint("review them above. If they are intended, re-run with --allow-delete")
+				}
+				return errs.Conflict("the plan replaces the monitoring on %d host(s) with a template",
+					len(plan.Replacements())).
+					WithHint("the existing items are listed above and will be deleted. If that is intended, re-run with --allow-delete")
 			}
 			if app.DryRun {
 				app.Printer.Infof("dry-run: %d step(s) not executed", len(plan.Steps))
@@ -322,8 +421,12 @@ document is wrong.`,
 			}
 			prompt := fmt.Sprintf("Apply %d change(s) to infrastructure %s?", len(plan.Steps), infraID)
 			if plan.Destructive() {
-				prompt = fmt.Sprintf("Apply %d change(s) to infrastructure %s, DELETING %d resource(s)?",
-					len(plan.Steps), infraID, len(plan.Deletions()))
+				lost := len(plan.Deletions())
+				for _, s := range plan.Replacements() {
+					lost += len(s.Replaces)
+				}
+				prompt = fmt.Sprintf("Apply %d change(s) to infrastructure %s, REMOVING %d resource(s)?",
+					len(plan.Steps), infraID, lost)
 			}
 			if err := app.Confirm(prompt); err != nil {
 				return err
@@ -341,13 +444,53 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 	t, sym := a.Theme(), a.Sym()
 	// Host ids created during this run, so monitoring items can reference them.
 	created := map[string]string{}
+	// Template ids by name, seeded as templates are created so a host in the
+	// same plan can be pointed at one that did not exist a moment ago.
+	templates := map[string]string{}
 
 	for i, s := range plan.Steps {
 		var err error
 		switch {
+		case s.Kind == "template" && s.Action == iac.ActionCreate:
+			body := copyBody(s.Body)
+			if _, ok := body["organization"]; !ok {
+				var org string
+				if org, err = a.resolveOrganization(""); err != nil {
+					return err
+				}
+				body["organization"] = atoiOr(org)
+			}
+			var raw jsonRaw
+			if err = a.mutate("POST", templatesPath, body, &raw); err == nil {
+				var m row
+				_ = jsonUnmarshal(raw, &m)
+				templates[s.Name] = str(m, "id")
+			}
+		case s.Kind == "template" && s.Action == iac.ActionUpdate:
+			templates[s.Name] = s.ID
+			err = a.mutate("PATCH", templatesPath+s.ID+"/", s.Body, nil)
+		case s.Kind == "check" && s.Action == iac.ActionCreate:
+			// A check is a monitoring item with no host: the template stamps
+			// it onto one later, so there is nothing to test here.
+			body := copyBody(s.Body)
+			if _, ok := body["organization"]; !ok {
+				var org string
+				if org, err = a.resolveOrganization(""); err != nil {
+					return err
+				}
+				body["organization"] = atoiOr(org)
+			}
+			err = a.mutate("POST", "/api/monitoring/items/", body, nil)
+		case s.Kind == "check" && s.Action == iac.ActionUpdate:
+			err = a.mutate("PATCH", "/api/monitoring/items/"+s.ID+"/", s.Body, nil)
+		case s.Kind == "check" && s.Action == iac.ActionDelete:
+			err = a.mutate("DELETE", "/api/monitoring/items/"+s.ID+"/", nil, nil)
 		case s.Kind == "host" && s.Action == iac.ActionCreate:
 			body := copyBody(s.Body)
 			body["infrastructure"] = atoiOr(infraID)
+			if err = a.bindTemplate(body, templates); err != nil {
+				return err
+			}
 			var raw jsonRaw
 			if err = a.mutate("POST", "/api/host/", body, &raw); err == nil {
 				var m row
@@ -355,7 +498,11 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 				created[s.Name] = str(m, "id")
 			}
 		case s.Kind == "host" && s.Action == iac.ActionUpdate:
-			err = a.mutate("PATCH", "/api/host/"+s.ID+"/", s.Body, nil)
+			body := copyBody(s.Body)
+			if err = a.bindTemplate(body, templates); err != nil {
+				return err
+			}
+			err = a.mutate("PATCH", "/api/host/"+s.ID+"/", body, nil)
 		case s.Kind == "host" && s.Action == iac.ActionDelete:
 			err = a.mutate("DELETE", "/api/host/"+s.ID+"/", nil, nil)
 		case s.Kind == "monitoring" && s.Action == iac.ActionCreate:
@@ -384,6 +531,50 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 	}
 	fmt.Fprintf(a.Stderr, "\n%s Applied %d change(s).\n", t.Green.Apply(sym.OK), len(plan.Steps))
 	return nil
+}
+
+// bindTemplate turns the template name the plan carries into the id the API
+// expects, and removes the marker so it is never sent.
+func (a *App) bindTemplate(body map[string]any, known map[string]string) error {
+	name, ok := body[iac.TemplateRefKey].(string)
+	delete(body, iac.TemplateRefKey)
+	if !ok || name == "" {
+		return nil
+	}
+	id, cached := known[name]
+	if !cached {
+		var err error
+		if id, err = a.templateIDByName(name); err != nil {
+			return err
+		}
+		known[name] = id
+	}
+	body["monitoring_template"] = atoiOr(id)
+	return nil
+}
+
+// templateIDByName resolves a template by name. An ambiguous name is an error:
+// applying the wrong template replaces a host's monitoring with someone else's.
+func (a *App) templateIDByName(name string) (string, error) {
+	rows, err := a.fetchRows(templatesPath, nil)
+	if err != nil {
+		return "", err
+	}
+	var matches []string
+	for _, m := range rows {
+		if str(m, "name") == name {
+			matches = append(matches, str(m, "id"))
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", errs.NotFound("monitoring template %q not found", name).
+			WithHint("declare it under templates: in the document, or create it: ups monitoring template create --name %q", name)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", errs.Conflict("monitoring template %q matches %d templates", name, len(matches))
+	}
 }
 
 // hostIDByName resolves a host by name within an infrastructure. Ambiguity is

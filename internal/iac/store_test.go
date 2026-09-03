@@ -237,3 +237,72 @@ func readAll(t *testing.T, root string) map[string]string {
 	}
 	return out
 }
+
+// A directory export must round-trip templates, or an export/apply cycle would
+// propose recreating every template it just wrote.
+func TestDirectoryRoundTripPreservesTemplates(t *testing.T) {
+	dir := t.TempDir()
+	in := &Document{
+		APIVersion:     APIVersion,
+		Infrastructure: InfrastructureR{ID: "6", Name: "OT Lab"},
+		Templates: []Template{{
+			ID: "4", Name: "PLC", Status: "published", Organization: "3",
+			Modules: []string{"2"},
+			Checks:  []MonitoringItem{{ID: "80", Name: "ping", Module: "2"}},
+		}},
+		Hosts: []Host{{ID: "2", Name: "plc01", Template: "PLC"}},
+	}
+	if _, err := Save(in, dir); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(out.Templates) != 1 {
+		t.Fatalf("expected the template to survive, got %v", out.Templates)
+	}
+	if out.Templates[0].Name != "PLC" || len(out.Templates[0].Checks) != 1 {
+		t.Errorf("template did not round-trip: %+v", out.Templates[0])
+	}
+	if out.Hosts[0].Template != "PLC" {
+		t.Errorf("host lost its template reference: %+v", out.Hosts[0])
+	}
+	if p := Diff(out, in); !p.Empty() {
+		t.Errorf("a round-trip must diff clean, got %v", p.Steps)
+	}
+}
+
+// A template file left behind would read as a template to manage on the next
+// apply, so an export that no longer produces it removes it and says so.
+func TestReexportPrunesTemplateFiles(t *testing.T) {
+	dir := t.TempDir()
+	with := &Document{
+		APIVersion:     APIVersion,
+		Infrastructure: InfrastructureR{ID: "6"},
+		Templates:      []Template{{ID: "4", Name: "PLC"}},
+		Hosts:          []Host{{ID: "2", Name: "plc01"}},
+	}
+	if _, err := Save(with, dir); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	without := &Document{
+		APIVersion:     APIVersion,
+		Infrastructure: InfrastructureR{ID: "6"},
+		Hosts:          []Host{{ID: "2", Name: "plc01"}},
+	}
+	res, err := Save(without, dir)
+	if err != nil {
+		t.Fatalf("re-save: %v", err)
+	}
+	if len(res.Removed) != 1 || !strings.Contains(res.Removed[0], "plc.yaml") {
+		t.Errorf("expected the stale template file to be reported as removed, got %v", res.Removed)
+	}
+	out, err := Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(out.Templates) != 0 {
+		t.Errorf("expected no templates after the prune, got %v", out.Templates)
+	}
+}

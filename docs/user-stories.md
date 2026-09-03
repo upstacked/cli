@@ -87,7 +87,7 @@ discovery is a real requirement it needs a separate mechanism — see the BLOCKE
 | D2 | As P2, I attach a monitoring item to a host — including a REST/HTTP check — and pick its module and interval. | `POST /api/monitoring/items/`, `GET /api/monitoring/modules/`, `/api/monitoring/intervals/` |
 | D3 | As P2, I test a monitoring item against a live host **before** saving it, and see the raw response. | `GET /api/monitoring/item/{id}/test`, `POST /api/orchestration/snmp_runbook_elements/{id}/test/` |
 | D4 | As P2, I store credentials (SNMP v2/v3, device, API, OAuth2, vendor-specific) without ever putting a secret on the command line. | `POST /api/credential/{type}/` (14 types), `POST /api/credential/credentials/bulk-create/` |
-| D5 | As P2, I apply a monitoring template to a host instead of building items one at a time. | `GET /api/monitoring/templates/`, `POST /api/host/monitoring_template/` |
+| D5 | As P2, I author a monitoring template and apply it to hosts instead of building items one at a time. | `/api/monitoring/templates/`, `/api/monitoring/templates/{id}/`, `/api/monitoring/templates/infra-system-credential/`, `POST /api/monitoring/items/` (host-less), `PATCH /api/host/{id}/` |
 | D6 | As P2, I update many hosts at once, previewing the change first. | `POST /api/host/bulkupdate/`, `POST /api/asset/bulk-update/` |
 | D7 | As P2, I link assets to hosts and keep them in sync. | `POST /api/asset/{id}/link-unlink/`, `/api/asset/{id}/sync-host/` |
 

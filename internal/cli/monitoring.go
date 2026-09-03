@@ -37,7 +37,7 @@ func newMonItemCmd(app *App) *cobra.Command {
 }
 
 func newMonItemListCmd(app *App) *cobra.Command {
-	var host string
+	var host, template string
 	c := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -50,6 +50,9 @@ func newMonItemListCmd(app *App) *cobra.Command {
 			q := app.infraQuery(nil)
 			if host != "" {
 				q.Set("host", host)
+			}
+			if template != "" {
+				q.Set("monitoring_template", template)
 			}
 			return app.runList(listOpts{
 				Path:    "/api/monitoring/items/",
@@ -67,6 +70,7 @@ func newMonItemListCmd(app *App) *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "filter by host id")
+	c.Flags().StringVar(&template, "template", "", "show the host-less items belonging to a template")
 	return c
 }
 
@@ -142,24 +146,44 @@ func newMonItemResultsCmd(app *App) *cobra.Command {
 }
 
 func newMonItemCreateCmd(app *App) *cobra.Command {
-	var host, name, module, params, credential, credType, description string
+	var host, template, org, name, module, params, credential, credType, description string
 	var interval int
 	var skipTest bool
 
 	c := &cobra.Command{
 		Use:   "create",
-		Short: "Add a monitoring item to a host",
+		Short: "Add a monitoring item to a host or a template",
 		Long: `Create a monitoring item.
 
-Unless --skip-test is given, the item is created and then tested, so a
-silently-broken check is caught immediately rather than during an incident.`,
+With --host the item is created on that device and, unless --skip-test is
+given, tested immediately so a silently-broken check is caught now rather than
+during an incident.
+
+With --template the item is created without a host: a blank that the template
+stamps onto every device it is applied to. Write host-specific values as Jinja
+references, e.g. {{ host.i_ip_address }}. A host-less item cannot be tested,
+because there is nothing to poll until it is applied.`,
 		Example: `  ups monitoring item create --host 12 --name "CPU" --module 3
-  ups monitoring item create --host 12 --name "API health" --module 7 --credential-type api`,
+  ups monitoring item create --host 12 --name "API health" --module 7 --credential-type api
+  ups monitoring item create --template 4 --name "uptime" --module 3 --params '{"oids":["1.3.6.1.2.1.1.3.0"]}'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if host == "" || name == "" {
-				return errs.Usage("--host and --name are required")
+			if name == "" {
+				return errs.Usage("--name is required")
 			}
-			body := map[string]any{"name": name, "host": atoiOr(host)}
+			if (host == "") == (template == "") {
+				return errs.Usage("exactly one of --host or --template is required").
+					WithHint("--host adds a check to one device; --template adds it to every device the template is applied to")
+			}
+			body := map[string]any{"name": name}
+			if host != "" {
+				body["host"] = atoiOr(host)
+			} else {
+				orgID, err := app.templateItemOrg(template, module, org)
+				if err != nil {
+					return err
+				}
+				body["organization"] = atoiOr(orgID)
+			}
 			if module != "" {
 				body["monitoring_module"] = atoiOr(module)
 			}
@@ -187,6 +211,16 @@ silently-broken check is caught immediately rather than during an incident.`,
 			fmt.Fprintf(app.Stderr, "%s Created monitoring item %s (%s)\n",
 				t.Green.Apply(sym.OK), name, id)
 
+			if template != "" {
+				// Nothing to poll yet, so the usual test is not skipped so much
+				// as impossible. Say which it is.
+				fmt.Fprintf(app.Stderr, "  %s a template item cannot be tested until it is applied to a host.\n",
+					t.Dim.Apply("note:"))
+				fmt.Fprintf(app.Stderr, "  %s ups monitoring template apply %s --host <id>\n",
+					t.Dim.Apply("next:"), template)
+				return nil
+			}
+
 			if skipTest || id == "" {
 				fmt.Fprintf(app.Stderr, "  %s verify it collects data: ups monitoring item test %s\n",
 					t.Yellow.Apply(sym.Warn), id)
@@ -213,7 +247,9 @@ silently-broken check is caught immediately rather than during an incident.`,
 			return app.Printer.Object(testRaw, nil)
 		},
 	}
-	c.Flags().StringVar(&host, "host", "", "host id (required)")
+	c.Flags().StringVar(&host, "host", "", "host id (mutually exclusive with --template)")
+	c.Flags().StringVar(&template, "template", "", "add the item to this monitoring template instead of a host")
+	c.Flags().StringVar(&org, "org", "", "organization id for a template item (defaults to yours when you belong to exactly one)")
 	c.Flags().StringVar(&name, "name", "", "item name (required)")
 	c.Flags().StringVar(&module, "module", "", "monitoring module id")
 	c.Flags().StringVar(&params, "params", "", "module parameters")
@@ -271,27 +307,6 @@ func newMonModuleCmd(app *App) *cobra.Command {
 						str(m, "id"), dash(str(m, "name")), dash(str(m, "type", "module_type")),
 						truncate(dash(str(m, "description")), 50),
 					}
-				},
-			})
-		},
-	})
-	return c
-}
-
-func newMonTemplateCmd(app *App) *cobra.Command {
-	c := &cobra.Command{Use: "template", Short: "Monitoring templates"}
-	c.AddCommand(&cobra.Command{
-		Use:     "list",
-		Aliases: []string{"ls"},
-		Short:   "List monitoring templates",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.runList(listOpts{
-				Path:    "/api/monitoring/templates/",
-				Columns: []string{"ID", "NAME", "DESCRIPTION"},
-				Empty:   "No monitoring templates.",
-				Cells: func(m row) []string {
-					return []string{str(m, "id"), dash(str(m, "name")),
-						truncate(dash(str(m, "description")), 60)}
 				},
 			})
 		},

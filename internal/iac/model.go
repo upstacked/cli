@@ -24,7 +24,27 @@ const APIVersion = "upstacked/v1"
 type Document struct {
 	APIVersion     string          `yaml:"apiVersion"`
 	Infrastructure InfrastructureR `yaml:"infrastructure"`
-	Hosts          []Host          `yaml:"hosts"`
+	// Templates are the monitoring templates the hosts below refer to.
+	// They belong to an organization rather than to this infrastructure, so
+	// the document creates and updates them but never deletes one: a template
+	// dropped from this file is almost certainly still in use somewhere the
+	// file cannot see.
+	Templates []Template `yaml:"templates,omitempty"`
+	Hosts     []Host     `yaml:"hosts"`
+}
+
+// Template is a reusable set of checks a kind of device gets.
+//
+// Checks are the host-less monitoring items the template stamps onto a device.
+// They reach a host through Modules: an item belongs to the template because
+// its module is in the set.
+type Template struct {
+	ID           string           `yaml:"id,omitempty"`
+	Name         string           `yaml:"name"`
+	Status       string           `yaml:"status,omitempty"`
+	Organization string           `yaml:"organization,omitempty"`
+	Modules      []string         `yaml:"modules,omitempty"`
+	Checks       []MonitoringItem `yaml:"checks,omitempty"`
 }
 
 // InfrastructureR identifies the target. The id is recorded for convenience
@@ -39,13 +59,18 @@ type InfrastructureR struct {
 type Host struct {
 	// ID is the server-assigned identity. Present in exported documents so a
 	// rename is a rename; omit it in hand-authored documents to match by name.
-	ID         string           `yaml:"id,omitempty"`
-	Name       string           `yaml:"name"`
-	Hostname   string           `yaml:"hostname,omitempty"`
-	IP         string           `yaml:"ip,omitempty"`
-	MAC        string           `yaml:"mac,omitempty"`
-	Type       string           `yaml:"type,omitempty"`
-	Serial     string           `yaml:"serial,omitempty"`
+	ID       string `yaml:"id,omitempty"`
+	Name     string `yaml:"name"`
+	Hostname string `yaml:"hostname,omitempty"`
+	IP       string `yaml:"ip,omitempty"`
+	MAC      string `yaml:"mac,omitempty"`
+	Type     string `yaml:"type,omitempty"`
+	Serial   string `yaml:"serial,omitempty"`
+	// Template names the monitoring template applied to this host. Setting it
+	// to a different value REPLACES the host's monitoring: the platform
+	// deletes every existing item before copying the template's in. An empty
+	// value means "not managed here", never "unassign".
+	Template   string           `yaml:"template,omitempty"`
 	Monitoring []MonitoringItem `yaml:"monitoring,omitempty"`
 }
 
@@ -73,6 +98,12 @@ func (d *Document) Normalize() {
 		items := d.Hosts[i].Monitoring
 		sort.Slice(items, func(a, b int) bool { return items[a].Name < items[b].Name })
 	}
+	sort.Slice(d.Templates, func(i, j int) bool { return d.Templates[i].Name < d.Templates[j].Name })
+	for i := range d.Templates {
+		checks := d.Templates[i].Checks
+		sort.Slice(checks, func(a, b int) bool { return checks[a].Name < checks[b].Name })
+		sort.Strings(d.Templates[i].Modules)
+	}
 }
 
 // Validate rejects documents that cannot be applied safely.
@@ -80,6 +111,29 @@ func (d *Document) Validate() error {
 	if d.APIVersion != "" && d.APIVersion != APIVersion {
 		return fmt.Errorf("unsupported apiVersion %q (expected %s)", d.APIVersion, APIVersion)
 	}
+	tplSeen := map[string]bool{}
+	for _, t := range d.Templates {
+		name := strings.TrimSpace(t.Name)
+		if name == "" {
+			return fmt.Errorf("every template needs a name: identity is by name, not by id")
+		}
+		if tplSeen[name] {
+			return fmt.Errorf("duplicate template name %q", name)
+		}
+		tplSeen[name] = true
+
+		checkSeen := map[string]bool{}
+		for _, c := range t.Checks {
+			if strings.TrimSpace(c.Name) == "" {
+				return fmt.Errorf("template %q has a check with no name", name)
+			}
+			if checkSeen[c.Name] {
+				return fmt.Errorf("template %q has duplicate check %q", name, c.Name)
+			}
+			checkSeen[c.Name] = true
+		}
+	}
+
 	seen := map[string]bool{}
 	for _, h := range d.Hosts {
 		name := strings.TrimSpace(h.Name)
@@ -119,7 +173,8 @@ type Step struct {
 	Action Action
 	Kind   string
 	Name   string
-	// Host scopes monitoring items to their device.
+	// Host scopes a step to its parent: the device for a monitoring item, the
+	// template for a check.
 	Host string
 	// ID is the server-side id, set for update and delete.
 	ID string
@@ -130,6 +185,11 @@ type Step struct {
 	Rename string
 	// Body is the payload to send.
 	Body map[string]any
+	// Replaces names the monitoring items this step destroys without being a
+	// delete step. Assigning a template to a host is an update to the host,
+	// but the platform wipes the host's existing items to carry it out, and
+	// that loss is otherwise invisible in the plan.
+	Replaces []string
 }
 
 func (s Step) String() string {
@@ -184,7 +244,30 @@ func (p *Plan) Add(s Step) { p.Steps = append(p.Steps, s) }
 // Destructive reports whether the plan removes anything.
 func (p *Plan) Destructive() bool {
 	for _, s := range p.Steps {
-		if s.Action == ActionDelete {
+		if s.Action == ActionDelete || len(s.Replaces) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Replacements returns the steps that destroy monitoring without being
+// deletions, so the confirmation prompt can count them alongside the deletes.
+func (p *Plan) Replacements() []Step {
+	var out []Step
+	for _, s := range p.Steps {
+		if s.Action != ActionDelete && len(s.Replaces) > 0 {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TouchesTemplates reports whether the plan changes a template or its checks.
+// Templates are shared beyond this infrastructure, so that is worth saying.
+func (p *Plan) TouchesTemplates() bool {
+	for _, s := range p.Steps {
+		if s.Kind == "template" || s.Kind == "check" {
 			return true
 		}
 	}
@@ -223,10 +306,16 @@ func (p *Plan) Empty() bool { return len(p.Steps) == 0 }
 // deterministic within each group.
 func (p *Plan) Sort() {
 	rank := map[Action]int{ActionCreate: 0, ActionUpdate: 1, ActionDelete: 2}
+	// Templates and their checks must exist before a host can be pointed at
+	// one, so kind order is explicit rather than alphabetical.
+	kindRank := map[string]int{"template": 0, "check": 1, "host": 2, "monitoring": 3}
 	sort.SliceStable(p.Steps, func(i, j int) bool {
 		a, b := p.Steps[i], p.Steps[j]
 		if rank[a.Action] != rank[b.Action] {
 			return rank[a.Action] < rank[b.Action]
+		}
+		if kindRank[a.Kind] != kindRank[b.Kind] {
+			return kindRank[a.Kind] < kindRank[b.Kind]
 		}
 		if a.Kind != b.Kind {
 			return a.Kind < b.Kind

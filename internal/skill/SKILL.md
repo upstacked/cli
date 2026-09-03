@@ -97,6 +97,47 @@ The API cannot test a configuration that has not been saved, so there is no way 
 one before creating it. `--skip-test` exists, but using it means nobody has confirmed the
 check works.
 
+### Applying a monitoring template replaces a host's monitoring
+
+A template is the set of checks a kind of device gets. Applying one is **not a merge**:
+every monitoring item on the host is deleted first, then the template's items are created
+in their place. Anything added to that host by hand is gone, and per the coverage rule
+above, nobody is told.
+
+```
+ups monitoring template list
+ups monitoring template show <id>
+ups monitoring template items <id>        # what would actually be checked
+ups monitoring template preflight <id>    # credentials the infrastructure is missing
+ups monitoring template apply <id> --host <h1,h2>
+```
+
+`apply` lists the items it will remove and confirms before writing, and preflights first
+unless `--skip-preflight` is given. Read that list rather than passing `--yes` past it: it
+is the only place the removal is ever visible.
+
+Templates are authored the other way round from items:
+
+```
+ups monitoring template create --name "Cisco IOS switch" --module <m1,m2>
+ups monitoring item create --template <id> --module <m1> --name "CPU"
+ups monitoring template update <id> --publish
+```
+
+Two things about this shape trip people up, and both are checked by the CLI:
+
+- **A template holds modules, not items.** An item belongs to a template because its
+  module is in that template's module set. Creating an item with a module outside the set
+  produces an item that is never applied, so `item create --template` refuses it and tells
+  you to `--add-module` first.
+- **Templates share items through modules.** An item added under a module that another
+  template also holds joins that template too. The CLI warns and asks; do not wave it
+  through without telling the user which other templates change.
+
+A host-less template item cannot be tested — there is nothing to poll until it is applied
+— so the usual create-then-test feedback loop does not run. That is exactly why a template
+should be applied to one host and checked before it is rolled out to the rest.
+
 ### Preflight a runbook before running it
 
 ```
@@ -163,6 +204,8 @@ git diffs small and reviewable.
 ```
 infra/
   infrastructure.yaml     # apiVersion and which infrastructure this is
+  templates/
+    cisco-ios-switch.yaml # one monitoring template, with its checks nested
   hosts/
     core-sw-01.yaml       # one host, with its monitoring items nested
     fw-01.yaml
@@ -183,6 +226,31 @@ wrong — fix the YAML.
 
 If apply fails partway it stops at that step and names it. Nothing is rolled back, so
 re-run `ups diff` to see what remains rather than assuming either outcome.
+
+### Monitoring templates in the document
+
+A host records the template applied to it in a `template:` field, and the export writes out
+the templates its hosts actually use — not the whole library. Editing a check in
+`templates/` is then one small diff, instead of the same edit repeated on every host that
+carries it.
+
+Two asymmetries here are deliberate, and both matter:
+
+- **A `template:` change on a host is destructive.** It reads as a one-field update, but the
+  platform carries it out by deleting every monitoring item on that host and copying the
+  template's in. `ups diff` lists the items that will be lost under the step, counts them,
+  and `apply` refuses without `--allow-delete`. Read that list. While a host's template is
+  changing, its inline `monitoring:` items are not diffed at all — the template is the
+  source of truth for them from that point on.
+- **A template missing from the document is never deleted.** Templates belong to the
+  organization, not to one infrastructure, so a file that stops mentioning one means "not
+  managed here", never "remove it". Deleting a template is an explicit act:
+  `ups monitoring template delete`. The converse is that editing a template *does* change it
+  everywhere it is used, including hosts this document does not list — `ups diff` says so
+  whenever a plan touches one.
+
+Checks removed from a template the document *does* declare are deleted, and count as
+destructive like any other removal.
 
 ### Renaming
 

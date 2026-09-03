@@ -424,3 +424,19 @@ func (a *App) infraQuery(extra url.Values) url.Values {
 
 // jsonUnmarshal is a thin wrapper so command files need not import encoding/json.
 func jsonUnmarshal(raw json.RawMessage, out any) error { return json.Unmarshal(raw, out) }
+
+// fetchRows retrieves a list endpoint as decoded rows for commands that need to
+// reason about the records rather than print them.
+func (a *App) fetchRows(path string, q url.Values) ([]row, error) {
+	c, err := a.Client()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := a.Ctx()
+	defer cancel()
+	list, err := c.GetList(ctx, api.Request{Method: "GET", Path: path, Query: q}, a.Limit)
+	if err != nil {
+		return nil, err
+	}
+	return decodeRows(list.Items), nil
+}

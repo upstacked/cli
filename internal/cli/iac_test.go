@@ -352,3 +352,186 @@ func TestReexportRemovesFilesForDeletedHosts(t *testing.T) {
 		t.Errorf("expected a clean diff after re-export, got:\n%s", res.Stdout)
 	}
 }
+
+// remoteStateWithTemplate registers an infrastructure whose host carries a
+// template, plus the template library the export reads.
+func remoteStateWithTemplate(e *env, hosts []any, hostItems []any, checks []any) {
+	e.stub.handle("/api/infrastructure/42/", 200, map[string]any{"id": 42, "name": "Acme"})
+	e.stub.handleMethod("GET", "/api/host/", 200, page(hosts...))
+	e.stub.handleMethod("GET", "/api/monitoring/templates/", 200, page(
+		map[string]any{"id": 4, "name": "PLC", "published_status": "published",
+			"organization":       3,
+			"monitoring_modules": []any{map[string]any{"id": 2, "name": "ping"}}},
+	))
+	// The same endpoint serves a host's items and a template's checks; only
+	// the query says which.
+	e.stub.handleFunc("/api/monitoring/items/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("monitoring_template") != "" {
+			_ = jsonEncode(w, page(checks...))
+			return
+		}
+		_ = jsonEncode(w, page(hostItems...))
+	})
+}
+
+func TestExportRecordsTemplatesTheHostsUse(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteStateWithTemplate(e,
+		[]any{map[string]any{"id": 2, "name": "plc01", "monitoring_template": 4,
+			"monitoring_template_name": "PLC"}},
+		[]any{map[string]any{"id": 27, "host": 2, "name": "ping"}},
+		[]any{map[string]any{"id": 80, "name": "ping", "monitoring_module": 2}},
+	)
+
+	res := e.run("export")
+	if res.ExitCode != 0 {
+		t.Fatalf("export failed: %s", res.Stderr)
+	}
+	contains(t, res.Stdout, "templates:")
+	contains(t, res.Stdout, "template: PLC")
+	contains(t, res.Stdout, "checks:")
+}
+
+func TestTemplateExportRoundTripsWithoutADiff(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteStateWithTemplate(e,
+		[]any{map[string]any{"id": 2, "name": "plc01", "monitoring_template_name": "PLC"}},
+		[]any{map[string]any{"id": 27, "host": 2, "name": "ping"}},
+		[]any{map[string]any{"id": 80, "name": "ping", "monitoring_module": 2}},
+	)
+	path := filepath.Join(t.TempDir(), "infra.yaml")
+	if res := e.run("export", "--out", path); res.ExitCode != 0 {
+		t.Fatalf("export failed: %s", res.Stderr)
+	}
+
+	res := e.run("diff", path)
+	if res.ExitCode != 0 {
+		t.Fatalf("diff failed: %s", res.Stderr)
+	}
+	contains(t, res.Stdout, "No changes")
+}
+
+// Pointing a host at a template deletes every item it already has. That must
+// be spelled out and gated, not slipped through as a one-field host update.
+func TestApplyRefusesToReplaceHostMonitoringWithoutAllowDelete(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteStateWithTemplate(e,
+		[]any{map[string]any{"id": 2, "name": "plc01"}},
+		[]any{
+			map[string]any{"id": 27, "host": 2, "name": "ping"},
+			map[string]any{"id": 28, "host": 2, "name": "hand-added"},
+		},
+		[]any{map[string]any{"id": 80, "name": "ping", "monitoring_module": 2}},
+	)
+
+	path := filepath.Join(t.TempDir(), "infra.yaml")
+	doc := `apiVersion: upstacked/v1
+infrastructure:
+  id: "42"
+hosts:
+  - id: "2"
+    name: plc01
+    template: PLC
+`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := e.run("apply", path, "--yes")
+	if res.ExitCode != errs.CodeConflict {
+		t.Fatalf("expected conflict exit %d, got %d: %s", errs.CodeConflict, res.ExitCode, res.Stderr)
+	}
+	contains(t, res.Stdout, "hand-added (removed by the template change)")
+	contains(t, res.Stdout, "2 existing monitoring item(s) will be replaced")
+	if got := e.stub.requestsTo("PATCH", "/api/host/2/"); len(got) != 0 {
+		t.Error("nothing may be written before the replacement is allowed")
+	}
+}
+
+func TestApplyBindsTheTemplateByNameToItsID(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteStateWithTemplate(e,
+		[]any{map[string]any{"id": 2, "name": "plc01"}},
+		[]any{},
+		[]any{map[string]any{"id": 80, "name": "ping", "monitoring_module": 2}},
+	)
+	e.stub.handleMethod("PATCH", "/api/host/2/", 200, map[string]any{"id": 2})
+
+	path := filepath.Join(t.TempDir(), "infra.yaml")
+	doc := `apiVersion: upstacked/v1
+infrastructure:
+  id: "42"
+hosts:
+  - id: "2"
+    name: plc01
+    template: PLC
+`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := e.run("apply", path, "--yes")
+	if res.ExitCode != 0 {
+		t.Fatalf("apply failed: %s\n%s", res.Stderr, res.Stdout)
+	}
+	got := e.stub.requestsTo("PATCH", "/api/host/2/")
+	if len(got) != 1 {
+		t.Fatalf("expected one host patch, got %d", len(got))
+	}
+	if got[0].Body["monitoring_template"] != float64(4) {
+		t.Errorf("expected the template name to resolve to id 4, got %v", got[0].Body)
+	}
+	if _, leaked := got[0].Body["__template_name"]; leaked {
+		t.Error("the internal template marker must never be sent to the API")
+	}
+}
+
+// Templates are organization-wide, so a plan that edits one says so.
+func TestPlanWarnsThatTemplatesAreSharedBeyondTheInfrastructure(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	remoteStateWithTemplate(e,
+		[]any{map[string]any{"id": 2, "name": "plc01", "monitoring_template_name": "PLC"}},
+		[]any{},
+		[]any{map[string]any{"id": 80, "name": "ping", "monitoring_module": 2}},
+	)
+
+	path := filepath.Join(t.TempDir(), "infra.yaml")
+	doc := `apiVersion: upstacked/v1
+infrastructure:
+  id: "42"
+templates:
+  - id: "4"
+    name: PLC
+    checks:
+      - id: "80"
+        name: ping
+        module: "2"
+      - name: uptime
+        module: "3"
+hosts:
+  - id: "2"
+    name: plc01
+    template: PLC
+`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := e.run("diff", path)
+	if res.ExitCode != 0 {
+		t.Fatalf("diff failed: %s", res.Stderr)
+	}
+	contains(t, res.Stdout, "create check PLC/uptime")
+	contains(t, res.Stdout, "Templates belong to the organization")
+}

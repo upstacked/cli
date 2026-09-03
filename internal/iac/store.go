@@ -17,15 +17,23 @@ import (
 //
 //	infra/
 //	  infrastructure.yaml
+//	  templates/
+//	    cisco-ios-switch.yaml
 //	  hosts/
 //	    core-sw-01.yaml
 //	    fw-01.yaml
+//
+// Templates get their own files for the reason the split exists at all: one
+// template is referenced by many hosts, so editing a check should be a one-line
+// diff in one file rather than the same edit repeated across every host that
+// carries it.
 //
 // The manifest is what marks a directory as an export; without it, Load
 // refuses rather than guessing at arbitrary YAML it finds.
 const (
 	ManifestName = "infrastructure.yaml"
 	hostsDir     = "hosts"
+	templatesDir = "templates"
 )
 
 // manifest is the directory-mode header file.
@@ -109,6 +117,10 @@ func saveDir(doc *Document, root string) (*SaveResult, error) {
 	}
 	res.Written = append(res.Written, manifestPath)
 
+	if err := saveTemplates(doc, root, res); err != nil {
+		return nil, err
+	}
+
 	kept := map[string]bool{}
 	names := hostFileNames(doc.Hosts)
 	for i := range doc.Hosts {
@@ -143,6 +155,76 @@ func saveDir(doc *Document, root string) (*SaveResult, error) {
 	}
 	sort.Strings(res.Removed)
 	return res, nil
+}
+
+// saveTemplates writes one file per template, pruning files this export did
+// not produce. Pruning a template file only stops managing it here; diff never
+// deletes a template on the platform.
+func saveTemplates(doc *Document, root string, res *SaveResult) error {
+	tplRoot := filepath.Join(root, templatesDir)
+	if len(doc.Templates) == 0 {
+		if _, err := os.Stat(tplRoot); errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(tplRoot, 0o755); err != nil {
+		return err
+	}
+
+	kept := map[string]bool{}
+	names := templateFileNames(doc.Templates)
+	for i := range doc.Templates {
+		p := filepath.Join(tplRoot, names[i])
+		b, err := yaml.Marshal(doc.Templates[i])
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, b, 0o644); err != nil {
+			return err
+		}
+		res.Written = append(res.Written, p)
+		kept[names[i]] = true
+	}
+
+	entries, err := os.ReadDir(tplRoot)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !isYAML(e.Name()) || kept[e.Name()] {
+			continue
+		}
+		p := filepath.Join(tplRoot, e.Name())
+		if err := os.Remove(p); err != nil {
+			return err
+		}
+		res.Removed = append(res.Removed, p)
+	}
+	return nil
+}
+
+func templateFileNames(templates []Template) []string {
+	out := make([]string, len(templates))
+	used := map[string]int{}
+	for i, t := range templates {
+		base := slug(t.Name)
+		if base == "" {
+			base = "template"
+		}
+		name := base + ".yaml"
+		if n, clash := used[base]; clash {
+			if t.ID != "" {
+				name = base + "-" + slug(t.ID) + ".yaml"
+			} else {
+				name = fmt.Sprintf("%s-%d.yaml", base, n+1)
+			}
+			used[base] = n + 1
+		} else {
+			used[base] = 1
+		}
+		out[i] = name
+	}
+	return out
 }
 
 // hostFileNames assigns a stable, unique filename to every host. Names are
@@ -217,6 +299,42 @@ func Load(path string) (*Document, error) {
 	return &doc, nil
 }
 
+func loadTemplates(root string) ([]Template, error) {
+	dir := filepath.Join(root, templatesDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && isYAML(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	var out []Template
+	for _, n := range names {
+		p := filepath.Join(dir, n)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		var t Template
+		if err := yaml.Unmarshal(b, &t); err != nil {
+			return nil, fmt.Errorf("cannot parse %s: %w", p, err)
+		}
+		if strings.TrimSpace(t.Name) == "" {
+			return nil, fmt.Errorf("%s has no name: every template file must set one", p)
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func loadDir(root string) (*Document, error) {
 	mb, err := os.ReadFile(filepath.Join(root, ManifestName))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -232,6 +350,12 @@ func loadDir(root string) (*Document, error) {
 	}
 
 	doc := &Document{APIVersion: m.APIVersion, Infrastructure: m.Infrastructure}
+
+	tpls, err := loadTemplates(root)
+	if err != nil {
+		return nil, err
+	}
+	doc.Templates = tpls
 
 	hostRoot := filepath.Join(root, hostsDir)
 	entries, err := os.ReadDir(hostRoot)
