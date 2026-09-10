@@ -237,10 +237,10 @@ func TestTemplateItemIsCreatedWithoutAHostAndIsNotTested(t *testing.T) {
 	if got[0].Body["organization"] != float64(3) {
 		t.Errorf("expected the template's organization, got %v", got[0].Body["organization"])
 	}
-	if reqs := e.stub.requestsTo("GET", "/api/monitoring/item/80/test"); len(reqs) != 0 {
-		t.Error("a host-less item cannot be tested; it must not be attempted")
+	if reqs := e.stub.requestsTo("POST", dryRunsPath); len(reqs) != 0 {
+		t.Error("a host-less item has no device to poll; it must not be checked")
 	}
-	contains(t, res.Stderr, "cannot be tested until it is applied")
+	contains(t, res.Stderr, "cannot be checked until it is applied")
 }
 
 // Templates share items through their modules: an item added to one template

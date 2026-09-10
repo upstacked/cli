@@ -177,14 +177,48 @@ func TestDryRunPerformsNoWrite(t *testing.T) {
 }
 
 // A monitoring item that silently collects nothing is the worst failure mode,
-// so creation tests the item unless explicitly told not to.
-func TestMonitoringItemCreateTestsTheNewItem(t *testing.T) {
+// so creation dry-runs the item unless explicitly told not to. A dry run, not
+// a test: the test stops at the raw response and cannot say whether the config
+// produces data.
+func TestMonitoringItemCreateDryRunsTheNewItem(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.org("3")
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
+	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+
+	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--module", "3")
+	if res.ExitCode != 0 {
+		t.Fatalf("create failed: %s", res.Stderr)
+	}
+	contains(t, res.Stderr, "Dry run 17 succeeded")
+	if got := e.stub.requestsTo("POST", dryRunsPath); len(got) != 1 {
+		t.Fatalf("a newly created monitoring item should be dry-run automatically, got %d", len(got))
+	}
+	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 0 {
+		t.Error("the weaker test endpoint must not be used when a dry run works")
+	}
+	// The API rejects a create with no organization, host-bound or not.
+	got := e.stub.requestsTo("POST", "/api/monitoring/items/")
+	if len(got) != 1 || got[0].Body["organization"] != float64(3) {
+		t.Errorf("expected the create to carry an organization, got %v", got)
+	}
+}
+
+// Only three data sources have mapping stages to preview. The rest are refused,
+// and falling back to the weaker check beats leaving the item unverified - so
+// long as the user is told which check actually ran.
+func TestMonitoringItemCreateFallsBackToTestWhenDryRunIsRefused(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.org("3")
+	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
+	e.stub.handleMethod("POST", dryRunsPath, 400, map[string]any{
+		"detail": "Dry runs are only supported for api_data, snmpstd and icmp",
+	})
 	e.stub.handleMethod("POST", "/api/monitoring/item/55/test", 201, map[string]any{
-		"description": "Started orchestration monitoring item test", "monitoring_item_result_id": 900,
+		"monitoring_item_result_id": 900,
 	})
 	e.stub.handleMethod("GET", "/api/monitoring/item/results/900/", 200, map[string]any{
 		"status": "success", "result": map[string]any{"value": 42},
@@ -194,15 +228,12 @@ func TestMonitoringItemCreateTestsTheNewItem(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
-	contains(t, res.Stderr, "Test succeeded")
 	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 1 {
-		t.Error("a newly created monitoring item should be tested automatically")
+		t.Fatal("a refused dry run must fall back to the test endpoint")
 	}
-	// The API rejects a create with no organization, host-bound or not.
-	got := e.stub.requestsTo("POST", "/api/monitoring/items/")
-	if len(got) != 1 || got[0].Body["organization"] != float64(3) {
-		t.Errorf("expected the create to carry an organization, got %v", got)
-	}
+	contains(t, res.Stderr, "the dry run was refused, so the item was tested instead")
+	contains(t, res.Stderr, "only supported for api_data")
+	contains(t, res.Stderr, "Test succeeded")
 }
 
 func TestMonitoringItemCreateSkipTest(t *testing.T) {
@@ -215,8 +246,11 @@ func TestMonitoringItemCreateSkipTest(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
+	if got := e.stub.requestsTo("POST", dryRunsPath); len(got) != 0 {
+		t.Error("--skip-test must suppress the automatic dry run")
+	}
 	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 0 {
-		t.Error("--skip-test must suppress the automatic test")
+		t.Error("--skip-test must not fall back to a test either")
 	}
 }
 

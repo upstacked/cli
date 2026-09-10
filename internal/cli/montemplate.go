@@ -525,7 +525,7 @@ func (a *App) resolveModuleSet(id string, set, add, remove []string) ([]any, err
 		delete(keep, fmt.Sprintf("%v", m))
 	}
 	out := make([]any, 0, len(keep))
-	for _, k := range sortedBoolKeys(keep) {
+	for _, k := range sortedKeys(keep) {
 		out = append(out, atoiOr(k))
 	}
 	return out, nil
@@ -681,16 +681,7 @@ func splitIDs(in []string) []any {
 	return out
 }
 
-func sortedKeys(m map[string][]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func sortedBoolKeys(m map[string]bool) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

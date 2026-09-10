@@ -81,33 +81,101 @@ bulk delete — run the diff and read it. Coverage removal is the line item to l
 ### A monitoring item is not trustworthy until it has returned data
 
 A misconfigured item does not error. It returns nothing, or it returns the wrong field,
-and you get either silence or false alerts. Testing is the only feedback loop that exists:
-afterwards there is no indicator distinguishing "healthy" from "never collected anything".
+and you get either silence or false alerts. A config can be structurally valid and still
+collect nothing, because whether it works depends on the shape of what the device returns
+— which varies by device, firmware and API version, so no amount of static checking
+settles it. Running it is the only feedback loop that exists.
 
-`ups monitoring item create` therefore tests the item it just made, and prints the
-response. Read it. If the test fails, the item exists but is collecting nothing — fix it
-or remove it, and tell the user; do not leave it and move on.
+**A dry run is that feedback loop.** It executes the real monitoring pipeline once —
+fetch, host mapping, schema mapping, alert evaluation — with the writing ends replaced by
+ones that record instead of publish. Nothing reaches Elasticsearch, no alert is raised, and
+what comes back is the data the config *would* have produced, in the shape real monitoring
+data takes. This is how you confirm a config you generated actually works before you treat
+it as done.
 
 ```
-ups monitoring item create --host <id> --name "CPU" --module <id>   # creates, then tests
-ups monitoring item test <item-id>                                  # re-test an existing item
-ups monitoring item results <item-id>                               # the most recent result
+ups monitoring item create --host <id> --name "CPU" --module <id>   # creates, then dry-runs
+ups monitoring item dry-run <item-id>                               # re-check an existing item
+ups monitoring item dry-run <item-id> --host <host-id>              # against a specific device
+ups monitoring item dry-run <item-id> --from-file config.json       # with unsaved overrides
+ups monitoring item dry-run show <run-id>                           # read back a queued run
 ```
 
-The test runs on the monitoring agent, asynchronously. The server accepting the job is not
-the same as the check collecting anything, so `ups` waits for the real outcome and reports
-that — success, partial, failed, or still running. A failed test exits non-zero. `--wait 0`
-returns as soon as the test is queued, and then only `ups monitoring item results` can tell
-you what happened.
+`create` therefore dry-runs the item it just made. Read the result. If the dry run fails,
+the item exists but is collecting nothing — fix it or remove it, and tell the user; do not
+leave it and move on. A dry run that would publish nothing exits non-zero, whether it
+failed outright or every stage passed and produced no data points.
 
-The API cannot test a configuration that has not been saved, so there is no way to check
-one before creating it. `--skip-test` exists, but using it means nobody has confirmed the
-check works.
+**You can check a config before saving it.** `--from-file` takes a JSON object of overrides
+— `parameters`, `mapping_rules`, `response_root_path`, `host_specific_api_call`, `timeout`,
+`schema_mapping`, `host` — applied in memory and never written. So the loop is: dry-run the
+candidate config, read the trace, adjust, dry-run again, and only then save. A field the
+API would not honour is refused rather than silently dropped, because a dropped override
+reads back as "that was checked" when nothing checked it.
+
+**Read the trace, not just the verdict.** It reports each stage separately, so a failure
+says *where* it failed rather than just that it did:
+
+| Stage | A failure here means |
+|---|---|
+| fetch | the device or API did not answer, or answered with an error |
+| host mapping | the response came back but nothing in it matched this host |
+| schema mapping | the data was found but the field expressions did not resolve |
+
+Host mapping is the one that misleads. On a failure `ups` prints `candidate_identifiers` —
+what each candidate in the response actually rendered to — next to the identifier
+expression and the value it was matched against. That is usually the whole answer.
+
+**Only `api_data`, `snmpstd` and `icmp` have mapping stages to preview.** Meraki, DNAC,
+Viptela, Webex, Cybervision and the legacy `snmp` worker are refused with a message saying
+so. For those, `ups monitoring item test` is the check that still applies.
+
+**A dry run is queued, not synchronous, and handed to an agent exactly once.** It runs on
+the customer's monitoring agent, which polls for work every few seconds, so expect a wait.
+`ups` polls for the outcome rather than reporting the dispatch as a success. A run nobody
+reports on is failed at two minutes — but only when it is read, so poll rather than assume
+pending means running. Do not retry by reading the same run again; that never re-dispatches
+it. Queue a new run.
+
+**Results are capped** at 100 data points and 200k characters of raw response. When a
+result was capped `ups` says so on stderr. Never pass a capped preview on as complete.
+
+`--skip-test` skips the check entirely. Using it means nobody has confirmed the check works.
 
 Every monitoring item belongs to an organization, and the API refuses a create without one.
 `ups` fills it in when you belong to exactly one; when you belong to several it stops and
 asks for `--org` rather than picking. That is not a guess worth making — an item filed under
 the wrong organization is invisible to the people who should see it.
+
+### `test` answers a weaker question than `dry-run`
+
+```
+ups monitoring item test <item-id>      # fetch only: did the device answer?
+ups monitoring item results <item-id>   # the most recent test result
+```
+
+`test` still works and is still worth having, but it stops at the raw response. It never
+runs host or schema mapping, so it cannot tell you whether a config produces data — only
+whether something answered. It also re-implements its own SNMP/HTTP/ICMP calls and falls
+through to a bare HTTP GET for anything it does not recognise, so a passing test is weaker
+evidence than it looks.
+
+Reach for `dry-run` by default. Reach for `test` when the data source has no mapping stages
+to preview and the dry run refuses it. `create` does this automatically: it dry-runs, falls
+back to a test when the source is unsupported, and says which check actually ran.
+
+### `CONFIG` on an item means a dry run confirmed it
+
+`monitoring_item_config_status` is derived from dry runs, and `ups monitoring item list`
+and `show` display it. It reads `COMPLETE` only while a successful dry run still matches
+the item's current config fingerprint — which covers the config fields, the schema mappings
+*and* the device. Editing the config or repointing it at another host invalidates that and
+flips the item back to `INCOMPLETE`.
+
+Saving is never blocked: base fields save freely and an incomplete item is a legal state,
+not an error. So `INCOMPLETE` is not a warning the platform will act on — it means nobody
+has confirmed this item collects anything, and per the coverage rule above, nothing will
+tell you later.
 
 ### Applying a monitoring template replaces a host's monitoring
 
@@ -126,7 +194,8 @@ ups monitoring template apply <id> --host <h1,h2>
 
 `apply` lists the items it will remove and confirms before writing, and preflights first
 unless `--skip-preflight` is given. Read that list rather than passing `--yes` past it: it
-is the only place the removal is ever visible.
+is the only place the removal is ever visible. The items it creates are unchecked; dry-run
+them on the first host before applying to the rest.
 
 Templates are authored the other way round from items:
 
@@ -146,9 +215,10 @@ Two things about this shape trip people up, and both are checked by the CLI:
   template also holds joins that template too. The CLI warns and asks; do not wave it
   through without telling the user which other templates change.
 
-A host-less template item cannot be tested — there is nothing to poll until it is applied
-— so the usual create-then-test feedback loop does not run. That is exactly why a template
-should be applied to one host and checked before it is rolled out to the rest.
+A host-less template item cannot be checked — there is no device to poll until it is
+applied — so the usual create-then-dry-run feedback loop does not run. That is exactly why
+a template should be applied to one host and dry-run there before it is rolled out to the
+rest.
 
 ### Preflight a runbook before running it
 
@@ -334,6 +404,8 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 | monitoring **module** | The definition of *what* to check. |
 | monitoring **item** | An instance of a module bound to a host + credential. |
 | monitoring **event** | A fired alert. |
+| `item dry-run` | Runs the whole pipeline, publishes nothing, tells you whether the config collects data. |
+| `item test` | Fetches the raw response and stops. Cannot tell you whether the config collects data. |
 | `change` | The planned or recorded work. |
 | `change_log` | The field-level audit trail of what was actually mutated. |
 | `ups event silence` | Mutes one event. For planned work use a maintenance window instead — it covers every host you are touching. |
@@ -389,7 +461,8 @@ Stop and ask the user rather than guessing:
 - A diff proposes deleting monitoring items, hosts, or credentials that the user did not
   explicitly ask to remove.
 - A runbook preflight reports missing credentials.
-- A monitoring item was created but its test returned nothing.
+- A monitoring item was created but its dry run collected nothing, or the dry run was
+  refused and only the weaker test ran.
 - The active context is not the infrastructure the user seems to be talking about.
 - The active API URL is production and the request looks exploratory or experimental.
 - An operation would affect more than a handful of hosts and the user did not name a bulk

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -26,8 +27,10 @@ func newMonitoringCmd(app *App) *cobra.Command {
   event     a fired alert
 
 A misconfigured item does not error. It returns nothing, or the wrong
-field, so 'ups monitoring item test' is the only feedback loop that
-distinguishes healthy from never-collected-anything.`,
+field, so 'ups monitoring item dry-run' is the feedback loop that
+distinguishes healthy from never-collected-anything: it runs the real
+pipeline and shows the data the config would have published, without
+publishing any of it.`,
 	}
 	c.AddCommand(newMonItemCmd(app), newMonModuleCmd(app), newMonTemplateCmd(app), newMonHostsCmd(app))
 	return c
@@ -37,8 +40,9 @@ func newMonItemCmd(app *App) *cobra.Command {
 	c := &cobra.Command{Use: "item", Short: "Monitoring items"}
 	c.AddCommand(
 		newMonItemListCmd(app), newMonItemShowCmd(app),
-		newMonItemTestCmd(app), newMonItemCreateCmd(app),
-		newMonItemDeleteCmd(app), newMonItemResultsCmd(app),
+		newMonItemDryRunCmd(app), newMonItemTestCmd(app),
+		newMonItemCreateCmd(app), newMonItemDeleteCmd(app),
+		newMonItemResultsCmd(app),
 	)
 	return c
 }
@@ -64,13 +68,17 @@ func newMonItemListCmd(app *App) *cobra.Command {
 			return app.runList(listOpts{
 				Path:    "/api/monitoring/items/",
 				Query:   q,
-				Columns: []string{"ID", "NAME", "HOST", "MODULE", "INTERVAL"},
+				Columns: []string{"ID", "NAME", "HOST", "MODULE", "INTERVAL", "CONFIG"},
 				Empty:   "No monitoring items found.",
 				Cells: func(m row) []string {
+					// CONFIG is INCOMPLETE until a dry run has confirmed the
+					// item's current config against its current device, so it
+					// is the column that says "nobody has checked this".
 					return []string{
 						str(m, "id"), dash(str(m, "name")), dash(str(m, "host_name", "host")),
 						dash(str(m, "monitoring_module_name", "monitoring_module")),
 						dash(str(m, "interval")),
+						dash(str(m, "monitoring_item_config_status")),
 					}
 				},
 			})
@@ -99,6 +107,7 @@ func newMonItemShowCmd(app *App) *cobra.Command {
 				{"Name", dash(str(m, "name"))},
 				{"Host", dash(str(m, "host_name", "host"))},
 				{"Module", dash(str(m, "monitoring_module_name", "monitoring_module"))},
+				{"Config status", dash(str(m, "monitoring_item_config_status"))},
 				{"Credential type", dash(str(m, "credential_type"))},
 				{"Interval", dash(str(m, "interval"))},
 				{"Parameters", dash(truncate(str(m, "parameters"), 120))},
@@ -112,12 +121,14 @@ func newMonItemTestCmd(app *App) *cobra.Command {
 	var wait time.Duration
 	c := &cobra.Command{
 		Use:   "test <id>",
-		Short: "Test a monitoring item and show what it collected",
-		Long: `Run a monitoring item once and report what came back.
+		Short: "Fetch a monitoring item's raw response (weaker than a dry run)",
+		Long: `Run a monitoring item once and report the raw response.
 
-Do this before trusting a new or edited item. A misconfigured item does not
-report an error: it silently collects nothing, or collects the wrong field,
-and the gap only surfaces during an incident it failed to catch.
+This stops at the fetch. It never runs host or schema mapping, so it cannot
+tell you whether the config produces data - only whether the device answered.
+Prefer 'ups monitoring item dry-run', which runs the whole pipeline and shows
+what would have been published. Reach for this one when the item's data source
+has no mapping stages to preview and the dry run refuses it.
 
 The test is dispatched to the monitoring agent and runs asynchronously, so
 this waits for the outcome rather than reporting the dispatch as a success.
@@ -267,13 +278,14 @@ func newMonItemCreateCmd(app *App) *cobra.Command {
 		Long: `Create a monitoring item.
 
 With --host the item is created on that device and, unless --skip-test is
-given, tested immediately so a silently-broken check is caught now rather than
-during an incident.
+given, dry-run immediately so a silently-broken check is caught now rather than
+during an incident. The dry run publishes nothing; it only reports what the
+config would have collected.
 
 With --template the item is created without a host: a blank that the template
 stamps onto every device it is applied to. Write host-specific values as Jinja
-references, e.g. {{ host.i_ip_address }}. A host-less item cannot be tested,
-because there is nothing to poll until it is applied.`,
+references, e.g. {{ host.i_ip_address }}. A host-less item cannot be checked,
+because there is no device to poll until it is applied.`,
 		Example: `  ups monitoring item create --host 12 --name "CPU" --module 3
   ups monitoring item create --host 12 --name "API health" --module 7 --credential-type api
   ups monitoring item create --template 4 --name "uptime" --module 3 --params '{"oids":["1.3.6.1.2.1.1.3.0"]}'`,
@@ -331,7 +343,7 @@ because there is nothing to poll until it is applied.`,
 			if template != "" {
 				// Nothing to poll yet, so the usual test is not skipped so much
 				// as impossible. Say which it is.
-				fmt.Fprintf(app.Stderr, "  %s a template item cannot be tested until it is applied to a host.\n",
+				fmt.Fprintf(app.Stderr, "  %s a template item cannot be checked until it is applied to a host.\n",
 					t.Dim.Apply("note:"))
 				fmt.Fprintf(app.Stderr, "  %s ups monitoring template apply %s --host <id>\n",
 					t.Dim.Apply("next:"), template)
@@ -339,24 +351,11 @@ because there is nothing to poll until it is applied.`,
 			}
 
 			if skipTest || id == "" {
-				fmt.Fprintf(app.Stderr, "  %s verify it collects data: ups monitoring item test %s\n",
+				fmt.Fprintf(app.Stderr, "  %s verify it collects data: ups monitoring item dry-run %s\n",
 					t.Yellow.Apply(sym.Warn), id)
 				return nil
 			}
-			// The item exists either way, so a failing test is reported and
-			// does not fail the command - but it is never reported as a pass.
-			testRow, testRaw, terr := app.testItem(id, testWait)
-			if terr != nil {
-				fmt.Fprintf(app.Stderr, "%s The item was created but could not be tested: %v\n",
-					t.Yellow.Apply(sym.Warn), terr)
-				fmt.Fprintf(app.Stderr, "  %s an item that collects nothing never alerts. Fix it or remove it.\n",
-					t.Dim.Apply("why it matters:"))
-				return nil
-			}
-			if err := app.reportTestOutcome(testRow, testRaw, id); err != nil {
-				fmt.Fprintf(app.Stderr, "  %s the item exists. Fix it or remove it: ups monitoring item delete %s\n",
-					t.Dim.Apply("next:"), id)
-			}
+			app.verifyCreatedItem(id)
 			return nil
 		},
 	}
@@ -370,8 +369,69 @@ because there is nothing to poll until it is applied.`,
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&description, "description", "", "description")
 	c.Flags().IntVar(&interval, "interval", 0, "polling interval")
-	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not test the item after creating it")
+	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not verify the item after creating it")
 	return c
+}
+
+// verifyCreatedItem confirms a freshly created item actually collects something.
+//
+// A dry run is the check that answers the question - it runs the mapping stages
+// the test endpoint never reaches - but only three data sources have those
+// stages, and the server refuses the rest with a 400. Falling back to the
+// weaker test is better than leaving the item unverified, so long as which
+// check ran is said out loud.
+//
+// Nothing here fails the command: the item exists either way, and a caller who
+// is told "created" and nothing else would assume it works. So a failure is
+// always reported, and never reported as a pass.
+func (a *App) verifyCreatedItem(id string) {
+	t, sym := a.Theme(), a.Sym()
+
+	m, _, err := a.dryRunItem(id, "", "", dryRunWait)
+	switch {
+	case err == nil:
+		if rerr := a.reportDryRun(m); rerr != nil {
+			// The hint distinguishes a config that collects nothing from a run
+			// that never happened; a blanket "delete it" would be wrong advice
+			// for the second.
+			fmt.Fprintf(a.Stderr, "%s %v\n", t.Red.Apply(sym.Fail), rerr)
+			if hint := errs.HintOf(rerr); hint != "" {
+				fmt.Fprintf(a.Stderr, "  %s %s\n", t.Dim.Apply("what to do:"), hint)
+			}
+			fmt.Fprintf(a.Stderr, "  %s the item exists either way: ups monitoring item show %s\n",
+				t.Dim.Apply("note:"), id)
+		}
+		return
+	case errs.StatusOf(err) != http.StatusBadRequest:
+		fmt.Fprintf(a.Stderr, "%s The item was created but could not be dry-run: %v\n",
+			t.Yellow.Apply(sym.Warn), err)
+		fmt.Fprintf(a.Stderr, "  %s an item that collects nothing never alerts. Fix it or remove it.\n",
+			t.Dim.Apply("why it matters:"))
+		return
+	}
+
+	// Report the server's reason rather than assuming it was the data source:
+	// an item with no host to run against is refused the same way, and calling
+	// that "no mapping stages to preview" would be a plain lie. Say which check
+	// ran either way, because a test proves less than a dry run does.
+	fmt.Fprintf(a.Stderr, "  %s the dry run was refused, so the item was tested instead.\n",
+		t.Dim.Apply("note:"))
+	fmt.Fprintf(a.Stderr, "        A test stops at the raw response and cannot confirm it collects data.\n")
+	fmt.Fprintf(a.Stderr, "  %s %v\n", t.Dim.Apply("refused because:"), err)
+
+	testRow, testRaw, terr := a.testItem(id, testWait)
+	if terr != nil {
+		fmt.Fprintf(a.Stderr, "%s The item was created but could not be tested: %v\n",
+			t.Yellow.Apply(sym.Warn), terr)
+		fmt.Fprintf(a.Stderr, "  %s an item that collects nothing never alerts. Fix it or remove it.\n",
+			t.Dim.Apply("why it matters:"))
+		return
+	}
+	if rerr := a.reportTestOutcome(testRow, testRaw, id); rerr != nil {
+		fmt.Fprintf(a.Stderr, "%s %v\n", t.Red.Apply(sym.Fail), rerr)
+		fmt.Fprintf(a.Stderr, "  %s the item exists. Fix it or remove it: ups monitoring item delete %s\n",
+			t.Dim.Apply("next:"), id)
+	}
 }
 
 func newMonItemDeleteCmd(app *App) *cobra.Command {
