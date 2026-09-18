@@ -305,6 +305,21 @@ included.
 rows apart — the interface, the sensor, the disk — and it is the one a
 multi-valued check cannot do without.
 
+When nothing in the catalogue fits, define one — but look first, because a
+schema is shared by every check that maps into it and is read by name from
+graphs and alert rules. A near-duplicate splits a device's history across two
+names that nothing joins back up.
+
+```
+ups monitoring schema create --name interface --field if_name:STRING --identifier if_name
+ups monitoring schema add-key <schema-id> --field errors:INTEGER
+```
+
+Field types are `STRING`, `INTEGER`, `FLOAT` and `BOOLEAN`. Adding a key is
+safe: existing mappings keep filling what they already fill. There is no remove
+— the API's delete endpoint takes no argument saying which key to drop, so
+`ups` will not guess at it.
+
 ### 2a. SNMP: walk the MIB
 
 The OIDs worth polling are almost never the scalars in SNMPv2-MIB; they are
@@ -364,10 +379,26 @@ this is the one job it is better at than a dry run.
 ### 3. Prove the config before saving it
 
 ```
-ups monitoring item create --host 12 --name "Interface counters" --module 3 --credential-type snmpv2
+ups monitoring action list
+ups monitoring item create --host 12 --name "Interface counters" --module 3 --data-source snmp:walk
 ups monitoring item dry-run <item-id> --from-file config.json
 ups monitoring item update <item-id> --from-file config.json
 ```
+
+**`--data-source` is required and has no sensible default.** It is what decides
+whether the check speaks SNMP, HTTP or ICMP; an item without one polls nothing,
+so `create` refuses rather than making a check that can never run. The
+catalogue is `(type, name)` pairs — the type is the protocol, the name is what
+that source does — because several types offer more than one. SNMP has both
+`get` and `walk`, and they are not interchangeable: `get` reads named scalars,
+`walk` enumerates a table. Pass an id, a `type:name` pair, or a bare type that
+offers only one action. A bare type that matches two is refused with both
+named; do not pick one to get past the error.
+
+The field is `action_type` on the wire and `data_source` in the item list's
+query parameters, and the dry run reports it under a third set of worker names
+(`snmpstd` for the current SNMP source, `snmp` for the legacy one). Three names
+for one thing — read the trace rather than assuming which is meant.
 
 `create` makes the item and dry-runs it. `dry-run --from-file` then applies a
 candidate config in memory — `parameters`, `response_root_path`,
@@ -573,6 +604,7 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 | data **schema** | The named fields a check publishes into. Shared: graphs and alert rules read them by name. |
 | schema **mapping** | One item's wiring from response paths onto those fields. Per item, not shared. |
 | `ups mib walk` | Reads the local MIB cache. Offline, and never touches the device. |
+| `action_type` / `data_source` / worker name | The same thing: an item's data source. `action_type` writes it, `data_source` filters the item list, and a dry-run trace names the worker (`snmpstd`, `api_data`, `icmp`). |
 | `item dry-run` | Runs the whole pipeline, publishes nothing, tells you whether the config collects data. |
 | `item test` | Fetches the raw response and stops. Cannot tell you whether the config collects data. |
 | `change` | The planned or recorded work. |
@@ -635,6 +667,8 @@ Stop and ask the user rather than guessing:
 - A mapping's paths resolve to nothing in the dry run, or a multi-valued mapping has
   no identifier and the user has not said the response is single-row.
 - `ups mib show` cannot resolve the OID you were about to poll.
+- A bare `--data-source` type matched more than one action. Ask which; `get` and
+  `walk` collect different things.
 - The active context is not the infrastructure the user seems to be talking about.
 - The active API URL is production and the request looks exploratory or experimental.
 - An operation would affect more than a handful of hosts and the user did not name a bulk

@@ -188,7 +188,7 @@ func TestMonitoringItemCreateDryRunsTheNewItem(t *testing.T) {
 	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
 	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--module", "3")
+	res := e.run("monitoring", "item", "create", "--data-source", "2", "--host", "7", "--name", "CPU", "--module", "3")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
@@ -224,7 +224,7 @@ func TestMonitoringItemCreateFallsBackToTestWhenDryRunIsRefused(t *testing.T) {
 		"status": "success", "result": map[string]any{"value": 42},
 	})
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--module", "3")
+	res := e.run("monitoring", "item", "create", "--data-source", "2", "--host", "7", "--name", "CPU", "--module", "3")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
@@ -242,7 +242,7 @@ func TestMonitoringItemCreateSkipTest(t *testing.T) {
 	e.org("3")
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--skip-test")
+	res := e.run("monitoring", "item", "create", "--data-source", "2", "--host", "7", "--name", "CPU", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}

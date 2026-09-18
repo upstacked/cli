@@ -37,7 +37,7 @@ pipeline and shows the data the config would have published, without
 publishing any of it.`,
 	}
 	c.AddCommand(newMonItemCmd(app), newMonModuleCmd(app), newMonTemplateCmd(app),
-		newMonSchemaCmd(app), newMonHostsCmd(app))
+		newMonSchemaCmd(app), newMonActionCmd(app), newMonHostsCmd(app))
 	return c
 }
 
@@ -275,7 +275,7 @@ func newMonItemResultsCmd(app *App) *cobra.Command {
 
 func newMonItemCreateCmd(app *App) *cobra.Command {
 	var host, template, org, name, module, params, credential, credType, description string
-	var rootPath, fromFile string
+	var rootPath, fromFile, dataSource string
 	var interval int
 	var skipTest bool
 
@@ -294,6 +294,11 @@ stamps onto every device it is applied to. Write host-specific values as Jinja
 references, e.g. {{ host.i_ip_address }}. A host-less item cannot be checked,
 because there is no device to poll until it is applied.
 
+--data-source is required. It decides whether the check speaks SNMP, HTTP or
+ICMP, and an item without one polls nothing at all - so this refuses rather
+than creating a check that can never run. Take an id, a "type:name" pair, or a
+bare type that offers only one action: ups monitoring action list.
+
 --from-file starts from a JSON config in the same shape 'dry-run --from-file'
 takes, so a config already proved on one device can be copied onto another in
 one step rather than retyped as flags. Explicit flags override the file.
@@ -301,10 +306,10 @@ one step rather than retyped as flags. Explicit flags override the file.
 The item is only half the check: it says how to reach the data, not what the
 data means. Give it a schema mapping next, or it fetches happily and publishes
 nothing - see 'ups monitoring item mapping'.`,
-		Example: `  ups monitoring item create --host 12 --name "CPU" --module 3
-  ups monitoring item create --host 12 --name "API health" --module 7 --credential-type api
-  ups monitoring item create --host 12 --name "Interfaces" --module 3 --from-file config.json
-  ups monitoring item create --template 4 --name "uptime" --module 3 --params '{"oids":["1.3.6.1.2.1.1.3.0"]}'`,
+		Example: `  ups monitoring item create --host 12 --name "CPU" --module 3 --data-source snmp:walk
+  ups monitoring item create --host 12 --name "API health" --module 7 --data-source api_data --credential-type api
+  ups monitoring item create --host 12 --name "Interfaces" --module 3 --data-source snmp:walk --from-file config.json
+  ups monitoring item create --template 4 --name "uptime" --module 3 --data-source snmp:get --params '{"oids":["1.3.6.1.2.1.1.3.0"]}'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
 				return errs.Usage("--name is required")
@@ -321,6 +326,23 @@ nothing - see 'ups monitoring item mapping'.`,
 				return err
 			}
 			body["name"] = name
+
+			// Refused rather than defaulted: an item with no data source does
+			// not know which protocol to speak, so it polls nothing - and per
+			// the coverage rule, nothing reports that later.
+			if dataSource == "" {
+				if _, ok := body["action_type"]; !ok {
+					return errs.Usage("--data-source is required").
+						WithHint("it decides whether the check speaks SNMP, HTTP or ICMP: ups monitoring action list")
+				}
+			} else {
+				actionID, err := app.resolveDataSource(dataSource)
+				if err != nil {
+					return err
+				}
+				body["action_type"] = atoiOr(actionID)
+			}
+
 			var orgID string
 			if host != "" {
 				body["host"] = atoiOr(host)
@@ -390,6 +412,7 @@ nothing - see 'ups monitoring item mapping'.`,
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&description, "description", "", "description")
 	c.Flags().StringVar(&rootPath, "response-root-path", "", "JSON path the field paths are evaluated relative to")
+	c.Flags().StringVar(&dataSource, "data-source", "", "data source id, \"type:name\", or an unambiguous type (required)")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON config to start from, in the same shape 'dry-run --from-file' takes")
 	c.Flags().IntVar(&interval, "interval", 0, "polling interval")
 	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not verify the item after creating it")
@@ -543,10 +566,11 @@ var itemUpdateKeys = map[string]bool{
 	"parameters": true, "response_root_path": true, "timeout": true,
 	"name": true, "description": true, "interval": true,
 	"credential": true, "credential_type": true, "monitoring_module": true,
+	"action_type": true,
 }
 
 func newMonItemUpdateCmd(app *App) *cobra.Command {
-	var name, description, params, rootPath, credential, credType, host, fromFile string
+	var name, description, params, rootPath, credential, credType, host, fromFile, dataSource string
 	var interval, timeout int
 	var hostSpecific, skipTest bool
 
@@ -585,6 +609,13 @@ dry-runs the item afterwards unless --skip-test.`,
 			addIf(body, "parameters", params)
 			addIf(body, "response_root_path", rootPath)
 			addIf(body, "credential_type", credType)
+			if dataSource != "" {
+				actionID, err := app.resolveDataSource(dataSource)
+				if err != nil {
+					return err
+				}
+				body["action_type"] = atoiOr(actionID)
+			}
 			if credential != "" {
 				body["credential"] = atoiOr(credential)
 			}
@@ -602,7 +633,7 @@ dry-runs the item afterwards unless --skip-test.`,
 			}
 			if len(body) == 0 {
 				return errs.Usage("nothing to change").
-					WithHint("pass --from-file, or one of --name, --params, --response-root-path, --interval, --credential, --host")
+					WithHint("pass --from-file, or one of --name, --params, --response-root-path, --data-source, --interval, --credential, --host")
 			}
 
 			if _, ok := body["host"]; ok {
@@ -634,6 +665,7 @@ dry-runs the item afterwards unless --skip-test.`,
 	c.Flags().StringVar(&description, "description", "", "new description")
 	c.Flags().StringVar(&params, "params", "", "module parameters")
 	c.Flags().StringVar(&rootPath, "response-root-path", "", "JSON path the field paths are evaluated relative to")
+	c.Flags().StringVar(&dataSource, "data-source", "", "data source id, \"type:name\", or an unambiguous type")
 	c.Flags().StringVar(&credential, "credential", "", "credential id")
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&host, "host", "", "repoint the item at another host")

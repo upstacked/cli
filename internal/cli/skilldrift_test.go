@@ -148,6 +148,10 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		// them looks like a failure.
 		{"an item with no mapping publishes nothing", "fetches happily and publishes nothing"},
 		{"a multi-valued mapping needs an identifier", "collapses onto one series"},
+		// An item with no data source has no protocol to speak. It was
+		// possible to create one for a while, and they polled nothing.
+		{"a data source is required", "polls nothing"},
+		{"get and walk are not interchangeable", "not interchangeable"},
 	}
 	for _, r := range required {
 		if !strings.Contains(skill.Content, r.phrase) {

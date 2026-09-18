@@ -203,7 +203,7 @@ func TestTemplateItemRequiresAModuleInTheTemplate(t *testing.T) {
 	e.login()
 	stubTemplate(e, "draft")
 
-	res := e.run("monitoring", "item", "create", "--template", "7", "--name", "CPU", "--module", "9")
+	res := e.run("monitoring", "item", "create", "--data-source", "2", "--template", "7", "--name", "CPU", "--module", "9")
 	if res.ExitCode != errs.CodeConflict {
 		t.Fatalf("expected conflict exit %d, got %d: %s", errs.CodeConflict, res.ExitCode, res.Stderr)
 	}
@@ -223,7 +223,7 @@ func TestTemplateItemIsCreatedWithoutAHostAndIsNotTested(t *testing.T) {
 	))
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 80, "name": "uptime"})
 
-	res := e.run("monitoring", "item", "create", "--template", "7", "--name", "uptime", "--module", "3")
+	res := e.run("monitoring", "item", "create", "--data-source", "2", "--template", "7", "--name", "uptime", "--module", "3")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
@@ -256,7 +256,7 @@ func TestTemplateItemWarnsWhenTheModuleIsSharedWithAnotherTemplate(t *testing.T)
 			"monitoring_modules": []any{map[string]any{"id": 3, "name": "uptime"}}},
 	))
 
-	res := e.run("monitoring", "item", "create", "--template", "7", "--name", "uptime", "--module", "3")
+	res := e.run("monitoring", "item", "create", "--data-source", "2", "--template", "7", "--name", "uptime", "--module", "3")
 	if res.ExitCode != errs.CodeUsage {
 		t.Fatalf("expected the shared-module warning to require confirmation, got %d: %s", res.ExitCode, res.Stderr)
 	}
@@ -270,7 +270,7 @@ func TestItemCreateRejectsBothHostAndTemplate(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 
-	res := e.run("monitoring", "item", "create", "--host", "12", "--template", "7", "--name", "CPU")
+	res := e.run("monitoring", "item", "create", "--data-source", "2", "--host", "12", "--template", "7", "--name", "CPU")
 	if res.ExitCode != errs.CodeUsage {
 		t.Fatalf("expected a usage error, got %d: %s", res.ExitCode, res.Stderr)
 	}
