@@ -1,6 +1,6 @@
 ---
 name: upstacked
-description: Operate Upstacked infrastructure via the `ups` CLI — devices, monitoring, credentials, IPAM, changes, runbooks, tickets, and infrastructure-as-code. Use whenever the task involves the `ups` command, Upstacked hosts/infrastructures/monitoring, or a user asks to inspect, change, or document network infrastructure managed by Upstacked.
+description: Operate Upstacked infrastructure via the `ups` CLI — devices, monitoring, MIBs and OID lookup, credentials, IPAM, changes, runbooks, tickets, and infrastructure-as-code. Use whenever the task involves the `ups` command, Upstacked hosts/infrastructures/monitoring, building SNMP or API checks for a device, or a user asks to inspect, change, or document network infrastructure managed by Upstacked.
 ---
 
 # Upstacked CLI
@@ -270,6 +270,172 @@ that takes a secret offers `--secret-stdin` or `--secret-file`; `ups login` offe
 
 Never echo a secret back to the user, into a file, or into a commit.
 
+## Building monitoring for a device
+
+Everything above is about not breaking monitoring that already exists. This is
+how to build a check that works in the first place.
+
+A check is three decisions, in this order:
+
+1. **Which data schemas the device must populate.** A schema is the contract
+   everything downstream reads — graphs, alert rules, the host's metric pages.
+   A check that collects real data into no schema is invisible to all of them.
+2. **Where the values come from.** For SNMP that is OIDs out of the vendor's
+   MIB. For an API it is JSON paths into a documented response.
+3. **How the checks group.** Items belong to modules, modules belong to
+   templates, and a template is what a whole class of device gets.
+
+Only the second differs between SNMP and an API. The rest is the same work.
+
+### 1. Decide which schemas the device must fill
+
+```
+ups monitoring schema list               # the catalogue
+ups monitoring schema show <id>          # its keys, and which one identifies a row
+ups monitoring schema host <host-id>     # what a device already publishes
+```
+
+Start with the last one. A device of the same type that is already monitored
+properly has the answer, and copying a working config beats deriving one:
+`ups monitoring item list --host <id>` then
+`ups monitoring item mapping list --item <id>` reads the whole thing out, paths
+included.
+
+`schema show` marks one field as the identifier. That is the field that tells
+rows apart — the interface, the sensor, the disk — and it is the one a
+multi-valued check cannot do without.
+
+### 2a. SNMP: walk the MIB
+
+The OIDs worth polling are almost never the scalars in SNMPv2-MIB; they are
+vendor tables, and no amount of guessing produces them. So the MIB is the
+reference, and `ups` keeps one locally:
+
+```
+ups mib sync                              # clone and index; ~450 MB on disk, once
+ups mib search cpmCPUTotal                # find an object by name
+ups mib search "input errors" --describe  # ...or by what the vendor says it measures
+ups mib walk ifXTable                     # list a subtree, in OID order
+ups mib show ifHCInOctets                 # numeric OID, syntax, description
+```
+
+`sync` clones LibreNMS's collection and Cisco's, then resolves every object's
+numeric OID by walking parent chains across all cached MIBs at once. It is the
+only step that touches the network; search, walk and show are offline and do
+not go near a device. Say what it will cost before running it unprompted: the
+cache lands around 450 MB under `ups mib path`, and a minute of clone time.
+`ups mib status` says whether it is already there. Add a vendor's own
+collection with `ups mib sync --repo <git-url>`.
+
+**Walk the table before choosing OIDs.** The walk is what catches the three
+mistakes that produce a check which looks healthy and is wrong:
+
+- taking `ifInOctets` when the device populates `ifHCInOctets` — a Counter32
+  wraps on a gigabit link in under a minute, and the graph just looks noisy;
+- taking a scalar when the device only populates the table;
+- taking the table's index column instead of the counter beside it.
+
+`show` prints an empty OID when the MIB defining that object's parent is not
+cached. That is reported rather than guessed, because a guessed OID polls a
+different object and the check still comes back green. Sync more repositories
+instead of filling it in.
+
+The index is TSV — name, oid, kind, syntax, access, module, file, description —
+at the directory `ups mib path` prints, so grep answers whatever the flags do
+not.
+
+A MIB says what an object is. It **does not say the device implements it**.
+Only a dry run settles that.
+
+### 2b. API: read the documentation, then one real response
+
+Establish two things from the docs before writing any paths: which call returns
+the data, and whether that call answers for one host or returns one document
+covering all of them. The second decides `host_specific_api_call`. Get it wrong
+and you have either N times the request volume, or a response the host mapping
+has no way to split.
+
+Then fetch one real response and write the paths against that, not against the
+documentation. The two disagree often enough — a field renamed, a list wrapped
+in an envelope, a version that never shipped — that paths derived from docs
+alone are a guess. `ups monitoring item test <id>` returns the raw body, and
+this is the one job it is better at than a dry run.
+
+### 3. Prove the config before saving it
+
+```
+ups monitoring item create --host 12 --name "Interface counters" --module 3 --credential-type snmpv2
+ups monitoring item dry-run <item-id> --from-file config.json
+ups monitoring item update <item-id> --from-file config.json
+```
+
+`create` makes the item and dry-runs it. `dry-run --from-file` then applies a
+candidate config in memory — `parameters`, `response_root_path`,
+`mapping_rules`, `host_specific_api_call`, `timeout`, `schema_mapping`, `host`
+— and reports what it would collect without saving any of it. Iterate there.
+
+`item update --from-file` takes the same file, so the config that was proved is
+the config that gets stored, with nothing retyped in between. `item create`
+accepts it too, which is how a config proved on one device is copied onto the
+next.
+
+Every edit invalidates the dry run that confirmed the item, so `update`
+dry-runs again afterwards. That is not ceremony: the config status is derived
+from dry runs, and nothing else will ever tell you the new value stopped
+resolving.
+
+### 4. Map the response onto the schema
+
+An item says how to reach the data. It does not say what the data means. An
+item with no schema mapping **fetches happily and publishes nothing** — the
+failure mode this whole section is arranged to avoid.
+
+```
+ups monitoring item mapping create --item <item-id> --schema 7 --field in_octets=$.ifHCInOctets
+ups monitoring item mapping list --item <item-id>
+ups monitoring item mapping update <mapping-id> --identifier '$.ifName' --multi-valued
+```
+
+`--field key=path` puts the schema key on the left and the JSON path on the
+right. Paths are evaluated after `response_root_path` has been applied, so
+write them relative to that root and not to the whole body.
+
+`--multi-valued` is for a response carrying many rows, and it needs
+`--identifier`: the path that tells the rows apart. Without one every interface
+on the switch **collapses onto one series**, which reads as working monitoring
+and is not.
+
+`update --field` merges by key. Changing one path leaves the other fields
+alone, and keeps the `filter_rules` and `value_mapping` on the field being
+changed, because neither is expressible as a flag and dropping them unasked
+would be a silent change of meaning. `--remove-field` and `--replace-fields`
+do remove coverage, and both confirm first.
+
+For the parts flags cannot express — filter rules, value mappings, alert rule
+config — `--from-file` takes the whole request body, and
+`dry-run --from-file` will preview a `schema_mapping` before any of it is
+written.
+
+### 5. Group items into modules, modules into templates
+
+```
+ups monitoring module create --name "Cisco interfaces"
+ups monitoring template create --name "Cisco IOS switch" --module <module-id>
+ups monitoring item create --template <template-id> --module <module-id> --name "Interface counters"
+ups monitoring template update <template-id> --publish
+ups monitoring template apply <template-id> --host <one-host-id>
+```
+
+A module is the group; a template holds modules; an item reaches a template
+because its module is in that template's set. A module added to two templates
+carries its items into both — the point when the checks really are the same,
+and a surprise when they are not.
+
+Apply to **one** host and dry-run there before rolling out. A template item has
+no device to poll, so nothing has checked it until it lands on one. Applying it
+to fifty hosts first produces fifty unverified checks, and per the coverage
+rule, no alert about any of them.
+
 ## Diff before apply, always
 
 Infrastructure-as-code is the primary way to make bulk changes:
@@ -404,6 +570,9 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 | monitoring **module** | The definition of *what* to check. |
 | monitoring **item** | An instance of a module bound to a host + credential. |
 | monitoring **event** | A fired alert. |
+| data **schema** | The named fields a check publishes into. Shared: graphs and alert rules read them by name. |
+| schema **mapping** | One item's wiring from response paths onto those fields. Per item, not shared. |
+| `ups mib walk` | Reads the local MIB cache. Offline, and never touches the device. |
 | `item dry-run` | Runs the whole pipeline, publishes nothing, tells you whether the config collects data. |
 | `item test` | Fetches the raw response and stops. Cannot tell you whether the config collects data. |
 | `change` | The planned or recorded work. |
@@ -463,6 +632,9 @@ Stop and ask the user rather than guessing:
 - A runbook preflight reports missing credentials.
 - A monitoring item was created but its dry run collected nothing, or the dry run was
   refused and only the weaker test ran.
+- A mapping's paths resolve to nothing in the dry run, or a multi-valued mapping has
+  no identifier and the user has not said the response is single-row.
+- `ups mib show` cannot resolve the OID you were about to poll.
 - The active context is not the infrastructure the user seems to be talking about.
 - The active API URL is production and the request looks exploratory or experimental.
 - An operation would affect more than a handful of hosts and the user did not name a bulk
@@ -478,6 +650,7 @@ The cost of asking is one message. The cost of a wrong write is a customer-facin
 ups init --api-url <url>   # server, auth, context, and install this skill
 ups doctor                 # verify all of it; non-zero exit if anything is wrong
 ups context show           # which server and infrastructure am I pointed at?
+ups mib sync               # cache the MIBs, if you will be authoring SNMP checks
 ```
 
 This skill installs into whichever LLM clients the user works with — Claude Code gets a

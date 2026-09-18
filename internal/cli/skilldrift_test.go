@@ -137,6 +137,17 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		{"test is the weaker check", "stops at the raw response"},
 		// INCOMPLETE is not a warning anything acts on.
 		{"config status means nobody has checked", "has confirmed this item collects anything"},
+		// A MIB is a catalogue of what could exist, not of what this device
+		// answers. An agent that treats it as the latter builds checks that
+		// poll nothing and reports them as done.
+		{"a MIB is not evidence the device implements it", "does not say the device implements it"},
+		// An unresolvable OID filled in by inference polls a different object
+		// and still comes back green.
+		{"an unresolved OID is reported, not guessed", "guessed OID polls"},
+		// The item half and the mapping half fail differently, and only one of
+		// them looks like a failure.
+		{"an item with no mapping publishes nothing", "fetches happily and publishes nothing"},
+		{"a multi-valued mapping needs an identifier", "collapses onto one series"},
 	}
 	for _, r := range required {
 		if !strings.Contains(skill.Content, r.phrase) {
