@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/upstacked/cli/internal/errs"
 )
@@ -26,7 +28,10 @@ type recordedRequest struct {
 	Path   string
 	Query  string
 	Body   map[string]any
-	Auth   string
+	// Raw is the request body verbatim. Body decodes only JSON objects, so an
+	// endpoint that takes a bare array needs this to be asserted on at all.
+	Raw  []byte
+	Auth string
 }
 
 func newStub(t *testing.T) *stubServer {
@@ -38,9 +43,14 @@ func newStub(t *testing.T) *stubServer {
 			Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"),
 		}
 		if r.Body != nil {
+			raw, _ := io.ReadAll(r.Body)
+			rec.Raw = raw
 			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.Unmarshal(raw, &body)
 			rec.Body = body
+			// Route handlers read the body too, so put it back rather than
+			// handing them an already-drained reader.
+			r.Body = io.NopCloser(bytes.NewReader(raw))
 		}
 		s.requests = append(s.requests, rec)
 
@@ -145,6 +155,7 @@ func newEnv(t *testing.T) *env {
 	t.Setenv("UPSTACKED_TOKEN", "")
 	t.Setenv("UPSTACKED_API_URL", "")
 	t.Setenv("UPSTACKED_INFRASTRUCTURE", "")
+	t.Setenv("UPS_NO_HISTORY", "")
 	// The MIB cache is a real directory on a developer's machine. Pointing it
 	// at a temp dir keeps tests from reading whatever happens to be synced
 	// there, which would make them pass or fail by accident.
@@ -172,8 +183,11 @@ func (e *env) run(args ...string) result {
 	root.SetOut(&out)
 	root.SetErr(&errOut)
 
+	started := time.Now()
 	code := errs.CodeOK
-	if err := root.Execute(); err != nil {
+	err = root.Execute()
+	app.Finish(args, err, started)
+	if err != nil {
 		code = reportErrorTo(app, err, &errOut)
 	}
 	return result{Stdout: out.String(), Stderr: errOut.String(), ExitCode: code}
@@ -201,9 +215,12 @@ func (e *env) runStdin(stdin string, args ...string) result {
 	root.SetOut(&out)
 	root.SetErr(&errOut)
 
+	started := time.Now()
 	code := errs.CodeOK
-	if err := root.Execute(); err != nil {
-		code = reportErrorTo(app, err, &errOut)
+	rerr := root.Execute()
+	app.Finish(args, rerr, started)
+	if rerr != nil {
+		code = reportErrorTo(app, rerr, &errOut)
 	}
 	return result{Stdout: out.String(), Stderr: errOut.String(), ExitCode: code}
 }

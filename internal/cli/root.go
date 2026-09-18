@@ -57,6 +57,7 @@ are active before you write.`,
 		newHostCmd(app),
 		newMonitoringCmd(app),
 		newMIBCmd(app),
+		newDebugCmd(app),
 		newEventCmd(app),
 		newMaintenanceCmd(app),
 		newChangeCmd(app),
@@ -98,7 +99,9 @@ func Execute(version string) int {
 	root := NewRoot(app)
 	root.Version = version
 
+	started := time.Now()
 	err := root.Execute()
+	app.Finish(os.Args[1:], err, started)
 	if err == nil {
 		return errs.CodeOK
 	}
@@ -156,5 +159,3 @@ func newCompletionCmd() *cobra.Command {
 	}
 	return c
 }
-
-var _ = time.Second

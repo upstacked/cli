@@ -49,6 +49,9 @@ type Client struct {
 	Tokens  TokenSource
 	// Debug writes request lines to this writer when non-nil.
 	Debug io.Writer
+	// Observe, when set, is told about every request that reached the server.
+	// Status is 0 when the request never got an answer.
+	Observe func(method, path string, status int, took time.Duration)
 }
 
 func New(baseURL string, timeout time.Duration) *Client {
@@ -170,7 +173,15 @@ func (c *Client) send(ctx context.Context, r Request) (*http.Response, error) {
 		fmt.Fprintf(c.Debug, "> %s %s\n", r.Method, u)
 	}
 
+	started := time.Now()
 	resp, err := c.HTTP.Do(req)
+	if c.Observe != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		c.Observe(r.Method, r.Path, status, time.Since(started))
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, errs.General("request to %s timed out or was cancelled", r.Path).

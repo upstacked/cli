@@ -16,6 +16,7 @@ import (
 	"github.com/upstacked/cli/internal/api"
 	"github.com/upstacked/cli/internal/config"
 	"github.com/upstacked/cli/internal/errs"
+	"github.com/upstacked/cli/internal/history"
 	"github.com/upstacked/cli/internal/output"
 	"github.com/upstacked/cli/internal/ui"
 )
@@ -50,8 +51,10 @@ type App struct {
 	Debug      bool
 
 	client *api.Client
-	theme  *ui.Theme
-	sym    ui.Symbols
+	// calls records the API requests this invocation made, for `ups debug log`.
+	calls []history.Call
+	theme *ui.Theme
+	sym   ui.Symbols
 	// logs remembers which log API this server has, so a polling command does
 	// not re-probe a missing endpoint on every tick.
 	logs logBackend
@@ -138,9 +141,15 @@ func (a *App) Client() (*api.Client, error) {
 	if a.Debug {
 		c.Debug = a.Stderr
 	}
+	c.Observe = func(method, path string, status int, took time.Duration) {
+		a.calls = append(a.calls, history.Call{
+			Method: method, Path: path, Status: status,
+			MS: took.Milliseconds(),
+		})
+	}
 
 	// A token from the environment is used as-is; CI has no config file (A2).
-	if tok := os.Getenv("UPSTACKED_TOKEN"); tok != "" {
+	if tok := envToken(); tok != "" {
 		c.Tokens = &api.StaticTokens{AccessToken: tok}
 		a.client = c
 		return c, nil
@@ -443,3 +452,54 @@ func (a *App) fetchRows(path string, q url.Values) ([]row, error) {
 	}
 	return decodeRows(list.Items), nil
 }
+
+// Finish records what this invocation did.
+//
+// Called from Execute and from the test harness rather than a cobra hook,
+// because PostRun does not fire when a command returns an error - and a failed
+// command is the one worth having in the log.
+func (a *App) Finish(args []string, err error, started time.Time) {
+	dir := a.ConfigDir
+	if dir == "" && a.Store != nil {
+		dir = a.Store.Dir
+	}
+	if dir == "" {
+		return
+	}
+
+	rec := history.Record{
+		Time:     started.UTC(),
+		Version:  Version,
+		Command:  strings.Join(commandWords(args), " "),
+		Args:     history.RedactArgs(args),
+		Exit:     errs.CodeOf(err),
+		MS:       time.Since(started).Milliseconds(),
+		Requests: a.calls,
+	}
+	if err != nil {
+		rec.Error = err.Error()
+	}
+	if a.Resolved != nil {
+		rec.APIURL = a.Resolved.APIURL.Value
+		rec.Profile = a.Resolved.ProfileName
+		rec.Infra = a.Resolved.Infrastructure.Value
+	}
+	history.Append(dir, rec)
+}
+
+// commandWords keeps the subcommand path and drops flags and their values, so
+// the log has a column worth grouping by.
+func commandWords(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			break
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// envToken reads the CI token, in one place so `ups debug` can report whether
+// one exists without duplicating the variable name.
+func envToken() string { return os.Getenv("UPSTACKED_TOKEN") }

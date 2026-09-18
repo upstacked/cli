@@ -272,15 +272,10 @@ the web UI if a key really has to go.`,
 				return errs.Usage("nothing to add").
 					WithHint("pass --field <key>:STRING")
 			}
-			m, _, err := app.getOne(schemasPath+args[0]+"/", nil)
-			if err != nil {
-				return err
-			}
-			body := map[string]any{
-				"name": str(m, "name"), "organization": atoiOr(str(m, "organization")),
-				"fields": parsed,
-			}
-			if err := app.mutate("POST", schemasPath+args[0]+"/create-data-schema-key/", body, nil); err != nil {
+			// The endpoint wants a bare list of keys, not the schema object the
+			// spec declares for it: a DataTypeSchemaRequest body is rejected
+			// with "Data should be a list of data schema keys".
+			if err := app.mutate("POST", schemasPath+args[0]+"/create-data-schema-key/", parsed, nil); err != nil {
 				return err
 			}
 			if !app.DryRun {

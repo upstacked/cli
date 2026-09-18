@@ -252,8 +252,13 @@ func describeDryRunFailure(err error, itemID string) error {
 		// data-source hint to every 400 would send a caller whose item simply
 		// has no host to a check that fails for the same reason.
 		if mentionsDataSource(err.Error()) {
-			e = e.WithHint("only api_data, snmpstd and icmp items have mapping stages to preview. "+
-				"For anything else the weaker check still applies: ups monitoring item test %s", itemID)
+			// Setting --data-source does not satisfy this: an item with an
+			// icmp action_type is refused here too, so the dry-run endpoint is
+			// reading something the action-based model does not write. Saying
+			// "set a data source" would send the caller round in a circle.
+			e = e.WithHint("this check does not read action_type, so --data-source will not satisfy it. "+
+				"It is a server-side gap, not a missing flag. The weaker check still applies: "+
+				"ups monitoring item test %s", itemID)
 		}
 		return e
 	case http.StatusForbidden:

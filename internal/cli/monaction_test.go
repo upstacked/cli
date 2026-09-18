@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/upstacked/cli/internal/errs"
@@ -208,9 +209,6 @@ func TestSchemaCreateWarnsWhenThereIsNoIdentifier(t *testing.T) {
 func TestSchemaAddKeyPostsToTheKeyEndpoint(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("GET", schemasPath+"7/", 200, map[string]any{
-		"id": 7, "name": "interface", "organization": 3, "fields": []any{},
-	})
 	e.stub.handleMethod("POST", schemasPath+"7/create-data-schema-key/", 201, map[string]any{"id": 7})
 
 	res := e.run("monitoring", "schema", "add-key", "7", "--field", "errors:INTEGER")
@@ -221,9 +219,15 @@ func TestSchemaAddKeyPostsToTheKeyEndpoint(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected one post, got %d", len(got))
 	}
-	fields, _ := got[0].Body["fields"].([]any)
-	first, _ := fields[0].(map[string]any)
-	if first["key"] != "errors" || first["of_type"] != "INTEGER" {
-		t.Errorf("field not sent: %v", first)
+	body := got[0].Raw
+	// The endpoint rejects the schema object the spec declares for it with
+	// "Data should be a list of data schema keys", so the body must be a bare
+	// array. A map body would decode here and pass a weaker assertion.
+	var keys []map[string]any
+	if err := json.Unmarshal(body, &keys); err != nil {
+		t.Fatalf("body must be a JSON array of keys, got %s", body)
+	}
+	if len(keys) != 1 || keys[0]["key"] != "errors" || keys[0]["of_type"] != "INTEGER" {
+		t.Errorf("field not sent: %s", body)
 	}
 }
