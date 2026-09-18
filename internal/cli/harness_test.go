@@ -131,6 +131,7 @@ type env struct {
 	dir       string
 	stub      *stubServer
 	skillHome string
+	mibDir    string
 }
 
 func newEnv(t *testing.T) *env {
@@ -144,7 +145,12 @@ func newEnv(t *testing.T) *env {
 	t.Setenv("UPSTACKED_TOKEN", "")
 	t.Setenv("UPSTACKED_API_URL", "")
 	t.Setenv("UPSTACKED_INFRASTRUCTURE", "")
-	return &env{t: t, dir: dir, stub: newStub(t), skillHome: home}
+	// The MIB cache is a real directory on a developer's machine. Pointing it
+	// at a temp dir keeps tests from reading whatever happens to be synced
+	// there, which would make them pass or fail by accident.
+	mibDir := t.TempDir()
+	t.Setenv("UPS_MIB_DIR", mibDir)
+	return &env{t: t, dir: dir, stub: newStub(t), skillHome: home, mibDir: mibDir}
 }
 
 // run executes a command exactly as a user would, and captures everything.
