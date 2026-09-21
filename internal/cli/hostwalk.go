@@ -179,7 +179,9 @@ func (a *App) reportWalk(m row, bases []string, names map[string]string) error {
 
 	fmt.Fprintf(a.Stderr, "\n%s To poll these columns, the item takes:\n", t.Dim.Apply(sym.OK))
 	cols := walkColumns(rows)
-	params, _ := json.Marshal(map[string]any{"oid": cols})
+	// The portal stores OIDs as one comma-separated string and splits it when
+	// the item is opened, so write them the way it reads them.
+	params, _ := json.Marshal(map[string]any{"oid": strings.Join(cols, ",")})
 	fmt.Fprintf(a.Stderr, "    --data-source snmp --params '%s'\n", params)
 	fmt.Fprintf(a.Stderr, "  and a --multi-valued mapping reads each row with:\n")
 	for _, c := range cols {

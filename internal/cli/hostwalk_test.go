@@ -87,7 +87,7 @@ func TestHostWalkProbesTheDeviceWithoutAnItem(t *testing.T) {
 	if idx2, idx10 := indexOf(res.Stdout, "Nu0"), indexOf(res.Stdout, "Gi1/0/3"); idx2 > idx10 {
 		t.Error("rows must be in numeric index order")
 	}
-	contains(t, res.Stderr, `"oid":["`+ifName+`","`+ifHCInOctets+`"]`)
+	contains(t, res.Stderr, `"oid":"`+ifName+`,`+ifHCInOctets+`"`)
 	contains(t, res.Stderr, "item['$."+ifName+"'].value")
 }
 

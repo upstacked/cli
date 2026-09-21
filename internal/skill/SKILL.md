@@ -384,8 +384,10 @@ fails the command; an object it does not implement comes back as no rows.
 It ends with what the item and its mapping take, which is the part that is easy
 to get wrong by hand:
 
-- **The item's parameter is `oid`, a list of column OIDs.** The SNMP pipeline
-  reads that key only. `oids`, or a map of names, saves fine and polls nothing.
+- **The item's parameter is `oid`: the column OIDs as one comma-separated
+  string.** The SNMP pipeline reads that key only; `oids`, or a map of names,
+  saves fine and polls nothing. The portal splits the string when it opens the
+  item, so write the string form (servers normalise a list, older ones do not).
 - **A table is a `--multi-valued` mapping.** Each row reads a column as
   `item['$.<column-oid>'].value`, and `.key` is the row's index. Use one column
   (usually the name) as `--identifier`, or every row collapses onto one series.
