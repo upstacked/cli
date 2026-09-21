@@ -74,6 +74,7 @@ func TestModuleCreateSuggestsAddingItToATemplate(t *testing.T) {
 func TestItemUpdateSavesTheConfigADryRunProved(t *testing.T) {
 	e := newEnv(t)
 	e.login()
+	e.stub.handleMethod("GET", "/api/monitoring/items/412/", 200, map[string]any{"id": 412, "parameters": "{}", "description": ""})
 	e.stub.handleMethod("PATCH", "/api/monitoring/items/412/", 200, map[string]any{"id": 412})
 
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -129,6 +130,7 @@ func TestItemUpdateRefusesFieldsItWillNotWrite(t *testing.T) {
 func TestItemUpdateDryRunsAfterSaving(t *testing.T) {
 	e := newEnv(t)
 	e.login()
+	e.stub.handleMethod("GET", "/api/monitoring/items/412/", 200, map[string]any{"id": 412, "parameters": "{}", "description": ""})
 	e.stub.handleMethod("PATCH", "/api/monitoring/items/412/", 200, map[string]any{"id": 412})
 	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
 	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))

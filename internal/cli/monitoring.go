@@ -435,6 +435,30 @@ nothing - see 'ups monitoring item mapping'.`,
 // Nothing here fails the command: the item exists either way, and a caller who
 // is told "created" and nothing else would assume it works. So a failure is
 // always reported, and never reported as a pass.
+// patchItem updates a monitoring item without erasing what the body leaves out.
+//
+// Older servers reset parameters and description on any PATCH that omits them,
+// which silently erases an SNMP item's OIDs. The stored values are sent back
+// when they are not being changed.
+func (a *App) patchItem(id string, body map[string]any) error {
+	_, hasParams := body["parameters"]
+	_, hasDesc := body["description"]
+	if (!hasParams || !hasDesc) && !a.DryRun {
+		current, _, err := a.getOne("/api/monitoring/items/"+id+"/", nil)
+		if err != nil {
+			return err
+		}
+		body = copyBody(body)
+		if !hasParams {
+			body["parameters"] = current["parameters"]
+		}
+		if !hasDesc {
+			body["description"] = current["description"]
+		}
+	}
+	return a.mutate("PATCH", "/api/monitoring/items/"+id+"/", body, nil)
+}
+
 func (a *App) verifyCreatedItem(id string) {
 	t, sym := a.Theme(), a.Sym()
 
@@ -649,8 +673,9 @@ dry-runs the item afterwards unless --skip-test.`,
 			}
 			if len(body) == 0 {
 				return errs.Usage("nothing to change").
-					WithHint("pass --from-file, or one of --name, --params, --response-root-path, --data-source, --interval, --credential, --host")
+					WithHint("pass --from-file, or one of --name, --params, --response-root-path, --data-source, --interval, --credential, --host, --test-host")
 			}
+
 
 			if _, ok := body["host"]; ok {
 				// Repointing an item is not an edit of the same check: the
@@ -659,7 +684,7 @@ dry-runs the item afterwards unless --skip-test.`,
 					app.Theme().Dim.Apply("note:"))
 			}
 
-			if err := app.mutate("PATCH", "/api/monitoring/items/"+args[0]+"/", body, nil); err != nil {
+			if err := app.patchItem(args[0], body); err != nil {
 				return err
 			}
 			if app.DryRun {

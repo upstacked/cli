@@ -474,7 +474,7 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 			}
 			err = a.mutate("POST", "/api/monitoring/items/", body, nil)
 		case s.Kind == "check" && s.Action == iac.ActionUpdate:
-			err = a.mutate("PATCH", "/api/monitoring/items/"+s.ID+"/", s.Body, nil)
+			err = a.patchItem(s.ID, s.Body)
 		case s.Kind == "check" && s.Action == iac.ActionDelete:
 			err = a.mutate("DELETE", "/api/monitoring/items/"+s.ID+"/", nil, nil)
 		case s.Kind == "host" && s.Action == iac.ActionCreate:
@@ -511,7 +511,7 @@ func (a *App) executePlan(plan *iac.Plan, infraID string) error {
 			}
 			err = a.mutate("POST", "/api/monitoring/items/", body, nil)
 		case s.Kind == "monitoring" && s.Action == iac.ActionUpdate:
-			err = a.mutate("PATCH", "/api/monitoring/items/"+s.ID+"/", s.Body, nil)
+			err = a.patchItem(s.ID, s.Body)
 		case s.Kind == "monitoring" && s.Action == iac.ActionDelete:
 			err = a.mutate("DELETE", "/api/monitoring/items/"+s.ID+"/", nil, nil)
 		}

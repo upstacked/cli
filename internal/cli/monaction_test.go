@@ -158,6 +158,7 @@ func TestDataSourceNamesTheCommandThatListsThem(t *testing.T) {
 func TestItemUpdateCanChangeTheDataSource(t *testing.T) {
 	e := newEnv(t)
 	e.login()
+	e.stub.handleMethod("GET", "/api/monitoring/items/412/", 200, map[string]any{"id": 412, "parameters": "{}", "description": ""})
 	stubActions(e)
 	e.stub.handleMethod("PATCH", "/api/monitoring/items/412/", 200, map[string]any{"id": 412})
 

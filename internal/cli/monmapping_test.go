@@ -140,6 +140,22 @@ func TestMappingUpdateResendsTheCurrentSchema(t *testing.T) {
 	}
 }
 
+func TestMappingUpdateOfTheIdentifierResendsTheFields(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	stubMapping(e)
+
+	res := e.run("monitoring", "item", "mapping", "update", "88",
+		"--identifier", "item['$.1'].value", "--skip-test")
+	if res.ExitCode != 0 {
+		t.Fatalf("update failed: %s", res.Stderr)
+	}
+	fields, _ := e.stub.requestsTo("PATCH", mappingsPath+"88/")[0].Body["field_mappings"].([]any)
+	if len(fields) != 2 {
+		t.Fatalf("older servers refuse a PATCH without fields; the current ones must be resent, got %v", fields)
+	}
+}
+
 func TestMappingUpdateConfirmsBeforeDroppingAField(t *testing.T) {
 	e := newEnv(t)
 	e.login()
@@ -293,13 +309,21 @@ func TestMappingOnAHostlessItemSaysHowToGiveItADevice(t *testing.T) {
 func TestItemUpdateSetsATestHost(t *testing.T) {
 	e := newEnv(t)
 	e.login()
+	e.stub.handleMethod("GET", "/api/monitoring/items/412/", 200, map[string]any{
+		"id": 412, "parameters": `{"oid": ["1.3.6.1.2.1.31.1.1.1.1"]}`, "description": "ports",
+	})
 	e.stub.handleMethod("PATCH", "/api/monitoring/items/412/", 200, map[string]any{"id": 412})
 
 	res := e.run("monitoring", "item", "update", "412", "--test-host", "205", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("update failed: %s", res.Stderr)
 	}
-	if got := e.stub.requestsTo("PATCH", "/api/monitoring/items/412/")[0].Body["test_host"]; got != float64(205) {
-		t.Errorf("expected test_host 205, got %v", got)
+	body := e.stub.requestsTo("PATCH", "/api/monitoring/items/412/")[0].Body
+	if body["test_host"] != float64(205) {
+		t.Errorf("expected test_host 205, got %v", body["test_host"])
+	}
+	// Older servers reset whatever a PATCH leaves out.
+	if body["parameters"] != `{"oid": ["1.3.6.1.2.1.31.1.1.1.1"]}` || body["description"] != "ports" {
+		t.Errorf("the stored parameters and description must be resent: %v", body)
 	}
 }

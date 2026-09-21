@@ -322,9 +322,13 @@ paths resolve to nothing.`,
 					WithHint("pass --field, --remove-field, --identifier, --multi-valued or --schema")
 			}
 			// Older servers refuse a PATCH without a schema ("Schema must be
-			// provided") even when it is not changing, so resend the current one.
+			// provided") or without fields, even when neither is changing, so
+			// resend the current ones.
 			if _, ok := body["schema"]; !ok {
 				body["schema"] = current["schema"]
+			}
+			if _, ok := body["field_mappings"]; !ok {
+				body["field_mappings"] = current["field_mappings"]
 			}
 
 			if err := app.mutate("PATCH", mappingsPath+args[0]+"/", body, nil); err != nil {
