@@ -309,7 +309,7 @@ nothing - see 'ups monitoring item mapping'.`,
 		Example: `  ups monitoring item create --host 12 --name "CPU" --module 3 --data-source snmp:walk
   ups monitoring item create --host 12 --name "API health" --module 7 --data-source api_data --credential-type api
   ups monitoring item create --host 12 --name "Interfaces" --module 3 --data-source snmp:walk --from-file config.json
-  ups monitoring item create --template 4 --name "uptime" --module 3 --data-source snmp:get --params '{"oids":["1.3.6.1.2.1.1.3.0"]}'`,
+  ups monitoring item create --template 4 --name "uptime" --module 3 --data-source snmp --params '{"oid":["1.3.6.1.2.1.1.3.0"]}'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
 				return errs.Usage("--name is required")
@@ -595,7 +595,7 @@ returns to INCOMPLETE and stays there until a new dry run passes. So this
 dry-runs the item afterwards unless --skip-test.`,
 		Example: `  ups monitoring item update 412 --from-file config.json
   ups monitoring item update 412 --response-root-path '$.data.items'
-  ups monitoring item update 412 --params '{"oids":["1.3.6.1.4.1.9.9.109.1.1.1.1.8"]}'`,
+  ups monitoring item update 412 --params '{"oid":["1.3.6.1.4.1.9.9.109.1.1.1.1.8"]}'`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body, err := itemUpdateBody(fromFile)

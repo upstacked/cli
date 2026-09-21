@@ -327,7 +327,7 @@ safe: existing mappings keep filling what they already fill. There is no remove
 — the API's delete endpoint takes no argument saying which key to drop, so
 `ups` will not guess at it.
 
-### 2a. SNMP: walk the MIB
+### 2a. SNMP: walk the MIB, then the device
 
 The OIDs worth polling are almost never the scalars in SNMPv2-MIB; they are
 vendor tables, and no amount of guessing produces them. So the MIB is the
@@ -367,7 +367,31 @@ at the directory `ups mib path` prints, so grep answers whatever the flags do
 not.
 
 A MIB says what an object is. It **does not say the device implements it**.
-Only a dry run settles that.
+Walk the device to find out, before creating anything:
+
+```
+ups host walk <host-id> ifName ifHCInOctets --credential <snmp-credential-id>
+```
+
+This asks the device itself, through the infrastructure's monitoring agent:
+which rows exist, what they are indexed by, and what the values look like. Names
+resolve through the MIB cache; numeric OIDs are sent as given. Nothing is saved
+or published. Walk the columns you mean to map, not whole tables — a large
+switch answers a table walk with thousands of rows. A walk the device refuses
+fails the command; an object it does not implement comes back as no rows.
+
+It ends with what the item and its mapping take, which is the part that is easy
+to get wrong by hand:
+
+- **The item's parameter is `oid`, a list of column OIDs.** The SNMP pipeline
+  reads that key only. `oids`, or a map of names, saves fine and polls nothing.
+- **A table is a `--multi-valued` mapping.** Each row reads a column as
+  `item['$.<column-oid>'].value`, and `.key` is the row's index. Use one column
+  (usually the name) as `--identifier`, or every row collapses onto one series.
+  The row columns the engine joins on (`selected_json_path`) are derived from
+  the paths in `--field` and `--identifier`, so name every column you read there.
+
+A dry run of the item then settles the rest.
 
 ### 2b. API: read the documentation, then one real response
 
@@ -616,6 +640,7 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 | data **schema** | The named fields a check publishes into. Shared: graphs and alert rules read them by name. |
 | schema **mapping** | One item's wiring from response paths onto those fields. Per item, not shared. |
 | `ups mib walk` | Reads the local MIB cache. Offline, and never touches the device. |
+| `ups host walk` | Asks the device, through the agent, what it returns. Nothing is saved or published. |
 | `data_source` / `action_type` / worker name | An item's data source. `data_source` (API, SNMP, ICMP) is the current field and what the dry run reads; `action_type` is the legacy one the server derives from it; a dry-run trace names the worker (`snmpstd`, `api_data`, `icmp`). |
 | `item dry-run` | Runs the whole pipeline, publishes nothing, tells you whether the config collects data. |
 | `item test` | Fetches the raw response and stops. Cannot tell you whether the config collects data. |

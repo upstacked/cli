@@ -21,6 +21,7 @@ They can be linked, but they have separate lifecycles.`,
 	c.AddCommand(
 		newHostListCmd(app), newHostShowCmd(app), newHostCreateCmd(app),
 		newHostDeleteCmd(app), newHostTraceCmd(app), newHostLinksCmd(app),
+		newHostWalkCmd(app),
 	)
 	return c
 }

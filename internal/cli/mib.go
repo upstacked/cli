@@ -229,8 +229,7 @@ func newMIBWalkCmd(app *App) *cobra.Command {
 
 This is the offline half of walking a device: it says what the subtree
 contains and what each column means. It does not poll anything - to see what
-a device actually returns, create the item and run
-'ups monitoring item dry-run'.
+a device actually returns, run 'ups host walk'.
 
 Walking the table you intend to poll is the step that catches the common
 mistake: taking a scalar when the device only populates the table, or taking

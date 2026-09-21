@@ -231,3 +231,40 @@ func TestMappingCreateAcceptsAFullBodyFromFile(t *testing.T) {
 		t.Errorf("value_mapping from the file was dropped: %v", first)
 	}
 }
+
+// A multi-valued mapping joins rows across selected_json_path; left empty the
+// engine itemizes nothing, so the columns the fields read are sent for it.
+func TestMappingCreateDerivesTheRowColumnsOfAMultiValuedMapping(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", mappingsPath, 201, map[string]any{"id": 91})
+
+	name := "item['$.1.3.6.1.2.1.31.1.1.1.1'].value"
+	res := e.run("monitoring", "item", "mapping", "create",
+		"--item", "412", "--schema", "7", "--multi-valued",
+		"--field", "name="+name,
+		"--field", "in_octets=item['$.1.3.6.1.2.1.31.1.1.1.6'].value",
+		"--identifier", name, "--skip-test")
+	if res.ExitCode != 0 {
+		t.Fatalf("create failed: %s", res.Stderr)
+	}
+	got, _ := e.stub.requestsTo("POST", mappingsPath)[0].Body["selected_json_path"].([]any)
+	if len(got) != 2 || got[0] != "$.1.3.6.1.2.1.31.1.1.1.1" || got[1] != "$.1.3.6.1.2.1.31.1.1.1.6" {
+		t.Errorf("expected both columns, in field order, got %v", got)
+	}
+}
+
+func TestMappingCreateLeavesASingleValuedMappingAlone(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", mappingsPath, 201, map[string]any{"id": 91})
+
+	res := e.run("monitoring", "item", "mapping", "create",
+		"--item", "412", "--schema", "7", "--field", "status=item['$.1.3.6.1.2.1.1.3'].value", "--skip-test")
+	if res.ExitCode != 0 {
+		t.Fatalf("create failed: %s", res.Stderr)
+	}
+	if got, _ := e.stub.requestsTo("POST", mappingsPath)[0].Body["selected_json_path"].(map[string]any); len(got) != 0 {
+		t.Errorf("a single-valued mapping has no row columns, got %v", got)
+	}
+}

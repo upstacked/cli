@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -199,6 +200,10 @@ config that is structurally valid and collects nothing.`,
 			if _, ok := body["selected_json_path"]; !ok {
 				body["selected_json_path"] = map[string]any{}
 			}
+			if cols := rowColumns(isMulti(body), body["selected_json_path"],
+				fieldsFromBody(body), str(row(body), "identifier")); cols != nil {
+				body["selected_json_path"] = cols
+			}
 
 			if isMulti(body) && str(row(body), "identifier") == "" {
 				fmt.Fprintf(app.Stderr, "  %s a multi-valued mapping with no --identifier collapses every row onto one series.\n",
@@ -296,6 +301,20 @@ paths resolve to nothing.`,
 						WithHint("delete it outright if that is the intent: ups monitoring item mapping delete %s", args[0])
 				}
 				body["field_mappings"] = merged
+			}
+
+			// The mapping as it will be after this PATCH, to derive its row
+			// columns from.
+			after := row{}
+			for k, v := range current {
+				after[k] = v
+			}
+			for k, v := range body {
+				after[k] = v
+			}
+			if cols := rowColumns(isMulti(after), after["selected_json_path"],
+				mappingFields(after), str(after, "identifier")); cols != nil {
+				body["selected_json_path"] = cols
 			}
 
 			if len(body) == 0 {
@@ -481,6 +500,50 @@ func droppedKeys(before []row, after []any) []string {
 	}
 	sort.Strings(lost)
 	return lost
+}
+
+var rowColumnRef = regexp.MustCompile(`item\[['"](\$[^'"]+)['"]\]`)
+
+// rowColumns derives selected_json_path for a multi-valued mapping that has
+// none, or returns nil. The engine joins rows across exactly those collections,
+// so an empty one itemizes nothing: the mapping saves, dry-runs to zero rows,
+// and publishes nothing. Every collection a field or the identifier reads is
+// one it needs.
+func rowColumns(multi bool, existing any, fields []row, identifier string) []any {
+	if !multi || !emptyJSON(existing) {
+		return nil
+	}
+	var cols []any
+	seen := map[string]bool{}
+	for _, expr := range append(fieldPaths(fields), identifier) {
+		for _, m := range rowColumnRef.FindAllStringSubmatch(expr, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				cols = append(cols, m[1])
+			}
+		}
+	}
+	return cols
+}
+
+func fieldPaths(fields []row) []string {
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, str(f, "path"))
+	}
+	return out
+}
+
+func emptyJSON(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		return len(x) == 0
+	case []any:
+		return len(x) == 0
+	}
+	return false
 }
 
 func isMulti(body map[string]any) bool {
