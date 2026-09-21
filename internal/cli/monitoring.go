@@ -676,7 +676,6 @@ dry-runs the item afterwards unless --skip-test.`,
 					WithHint("pass --from-file, or one of --name, --params, --response-root-path, --data-source, --interval, --credential, --host, --test-host")
 			}
 
-
 			if _, ok := body["host"]; ok {
 				// Repointing an item is not an edit of the same check: the
 				// confirmation it carried was against the old device.
