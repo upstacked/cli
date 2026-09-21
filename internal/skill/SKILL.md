@@ -130,12 +130,12 @@ expression and the value it was matched against. That is usually the whole answe
 Viptela, Webex, Cybervision and the legacy `snmp` worker are refused with a message saying
 so. For those, `ups monitoring item test` is the check that still applies.
 
-**Older servers refuse a dry run for items typed with `--data-source`.** Their check read a
-legacy field that `action_type` did not fill. If "no data source that can be dry run"
-comes back for an item that has one, set it once more with
-`ups monitoring item update <id> --data-source <type:name>`. If it is still refused, the
-server predates the fix: fall back to `ups monitoring item test`, say plainly that the
-stronger check could not run, and do not report the item as verified.
+**The dry run reads `data_source`, not the legacy `action_type`.** An item typed by a
+legacy action (`--data-source snmp:walk`, an id) had no `data_source` on older servers and
+is refused with "no data source that can be dry run". Set it by name —
+`ups monitoring item update <id> --data-source snmp` (or `api`, `icmp`) — which writes
+`data_source` directly. If it is still refused, fall back to `ups monitoring item test`,
+say plainly that the stronger check could not run, and do not report the item as verified.
 
 **A dry run is queued, not synchronous, and handed to an agent exactly once.** It runs on
 the customer's monitoring agent, which polls for work every few seconds, so expect a wait.
@@ -387,25 +387,30 @@ this is the one job it is better at than a dry run.
 
 ```
 ups monitoring action list
-ups monitoring item create --host 12 --name "Interface counters" --module 3 --data-source snmp:walk
+ups monitoring item create --host 12 --name "Interface counters" --module 3 --data-source snmp
 ups monitoring item dry-run <item-id> --from-file config.json
 ups monitoring item update <item-id> --from-file config.json
 ```
 
 **`--data-source` is required and has no sensible default.** It is what decides
 whether the check speaks SNMP, HTTP or ICMP; an item without one polls nothing,
-so `create` refuses rather than making a check that can never run. The
-catalogue is `(type, name)` pairs — the type is the protocol, the name is what
-that source does — because several types offer more than one. SNMP has both
-`get` and `walk`, and they are not interchangeable: `get` reads named scalars,
-`walk` enumerates a table. Pass an id, a `type:name` pair, or a bare type that
-offers only one action. A bare type that matches two is refused with both
-named; do not pick one to get past the error.
+so `create` refuses rather than making a check that can never run.
 
-The field is `action_type` on the wire and `data_source` in the item list's
-query parameters, and the dry run reports it under a third set of worker names
-(`snmpstd` for the current SNMP source, `snmp` for the legacy one). Three names
-for one thing — read the trace rather than assuming which is meant.
+Prefer `api`, `snmp` or `icmp`. Those are data sources, the current model: they
+are written as `data_source`, the server derives the legacy `action_type` from
+them, and they are the only sources a dry run can execute. `snmp` is the
+item-level SNMP pipeline, which walks.
+
+Anything else is a legacy action from `ups monitoring action list`, written as
+`action_type`: an id, a `type:name` pair, or a bare type that offers only one
+action. Legacy `snmp:get` and `snmp:walk` are not interchangeable: `get` reads
+named scalars, `walk` enumerates a table. A bare type that matches two is refused
+with both named; do not pick one to get past the error. A number is always a legacy action id, never a data
+source id — the two id spaces overlap, so `1` means `meraki:host_status`, not API.
+
+The dry run reports the source under a third set of worker names (`snmpstd` for
+the current SNMP source, `snmp` for the legacy one). Read the trace rather than
+assuming which is meant.
 
 `create` makes the item and dry-runs it. `dry-run --from-file` then applies a
 candidate config in memory — `parameters`, `response_root_path`,
@@ -611,7 +616,7 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 | data **schema** | The named fields a check publishes into. Shared: graphs and alert rules read them by name. |
 | schema **mapping** | One item's wiring from response paths onto those fields. Per item, not shared. |
 | `ups mib walk` | Reads the local MIB cache. Offline, and never touches the device. |
-| `action_type` / `data_source` / worker name | The same thing: an item's data source. `action_type` writes it, `data_source` filters the item list, and a dry-run trace names the worker (`snmpstd`, `api_data`, `icmp`). |
+| `data_source` / `action_type` / worker name | An item's data source. `data_source` (API, SNMP, ICMP) is the current field and what the dry run reads; `action_type` is the legacy one the server derives from it; a dry-run trace names the worker (`snmpstd`, `api_data`, `icmp`). |
 | `item dry-run` | Runs the whole pipeline, publishes nothing, tells you whether the config collects data. |
 | `item test` | Fetches the raw response and stops. Cannot tell you whether the config collects data. |
 | `change` | The planned or recorded work. |
@@ -698,8 +703,8 @@ Stop and ask the user rather than guessing:
 - A mapping's paths resolve to nothing in the dry run, or a multi-valued mapping has
   no identifier and the user has not said the response is single-row.
 - `ups mib show` cannot resolve the OID you were about to poll.
-- A bare `--data-source` type matched more than one action. Ask which; `get` and
-  `walk` collect different things.
+- A legacy `--data-source` type matched more than one action. Ask which; they
+  collect different things.
 - The active context is not the infrastructure the user seems to be talking about.
 - The active API URL is production and the request looks exploratory or experimental.
 - An operation would affect more than a handful of hosts and the user did not name a bulk

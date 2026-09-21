@@ -331,16 +331,14 @@ nothing - see 'ups monitoring item mapping'.`,
 			// not know which protocol to speak, so it polls nothing - and per
 			// the coverage rule, nothing reports that later.
 			if dataSource == "" {
-				if _, ok := body["action_type"]; !ok {
+				_, hasAction := body["action_type"]
+				_, hasSource := body["data_source"]
+				if !hasAction && !hasSource {
 					return errs.Usage("--data-source is required").
 						WithHint("it decides whether the check speaks SNMP, HTTP or ICMP: ups monitoring action list")
 				}
-			} else {
-				actionID, err := app.resolveDataSource(dataSource)
-				if err != nil {
-					return err
-				}
-				body["action_type"] = atoiOr(actionID)
+			} else if err := app.setDataSource(body, dataSource); err != nil {
+				return err
 			}
 
 			var orgID string
@@ -412,7 +410,7 @@ nothing - see 'ups monitoring item mapping'.`,
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&description, "description", "", "description")
 	c.Flags().StringVar(&rootPath, "response-root-path", "", "JSON path the field paths are evaluated relative to")
-	c.Flags().StringVar(&dataSource, "data-source", "", "data source id, \"type:name\", or an unambiguous type (required)")
+	c.Flags().StringVar(&dataSource, "data-source", "", "api, snmp or icmp; or a legacy action id, \"type:name\" or unambiguous type (required)")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON config to start from, in the same shape 'dry-run --from-file' takes")
 	c.Flags().IntVar(&interval, "interval", 0, "polling interval")
 	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not verify the item after creating it")
@@ -566,7 +564,7 @@ var itemUpdateKeys = map[string]bool{
 	"parameters": true, "response_root_path": true, "timeout": true,
 	"name": true, "description": true, "interval": true,
 	"credential": true, "credential_type": true, "monitoring_module": true,
-	"action_type": true,
+	"action_type": true, "data_source": true,
 }
 
 func newMonItemUpdateCmd(app *App) *cobra.Command {
@@ -610,11 +608,9 @@ dry-runs the item afterwards unless --skip-test.`,
 			addIf(body, "response_root_path", rootPath)
 			addIf(body, "credential_type", credType)
 			if dataSource != "" {
-				actionID, err := app.resolveDataSource(dataSource)
-				if err != nil {
+				if err := app.setDataSource(body, dataSource); err != nil {
 					return err
 				}
-				body["action_type"] = atoiOr(actionID)
 			}
 			if credential != "" {
 				body["credential"] = atoiOr(credential)
@@ -665,7 +661,7 @@ dry-runs the item afterwards unless --skip-test.`,
 	c.Flags().StringVar(&description, "description", "", "new description")
 	c.Flags().StringVar(&params, "params", "", "module parameters")
 	c.Flags().StringVar(&rootPath, "response-root-path", "", "JSON path the field paths are evaluated relative to")
-	c.Flags().StringVar(&dataSource, "data-source", "", "data source id, \"type:name\", or an unambiguous type")
+	c.Flags().StringVar(&dataSource, "data-source", "", "api, snmp or icmp; or a legacy action id, \"type:name\" or unambiguous type")
 	c.Flags().StringVar(&credential, "credential", "", "credential id")
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&host, "host", "", "repoint the item at another host")

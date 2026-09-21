@@ -53,6 +53,32 @@ between two.`,
 	return c
 }
 
+// dataSourceIDs are the item data sources the platform is built around now:
+// the monitoring engine's item-level pipelines, and the only sources a dry run
+// can execute. action_type is the older model; the server derives it from the
+// data source, so these are written as data_source and nothing else.
+var dataSourceIDs = map[string]int{"api": 1, "snmp": 2, "icmp": 3}
+
+// dataSourceID reports the data source a spec names, or 0 for a legacy action.
+func dataSourceID(spec string) int {
+	return dataSourceIDs[strings.ToLower(strings.TrimSpace(spec))]
+}
+
+// setDataSource writes spec onto an item body: a data source by name, or else
+// a legacy action by id or type:name.
+func (a *App) setDataSource(body map[string]any, spec string) error {
+	if id := dataSourceID(spec); id != 0 {
+		body["data_source"] = id
+		return nil
+	}
+	actionID, err := a.resolveDataSource(spec)
+	if err != nil {
+		return err
+	}
+	body["action_type"] = atoiOr(actionID)
+	return nil
+}
+
 // resolveDataSource turns what a caller typed into an action id.
 //
 // A bare type is accepted only when it is unambiguous. Picking one of two SNMP

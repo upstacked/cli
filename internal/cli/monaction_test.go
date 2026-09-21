@@ -16,6 +16,8 @@ func stubActions(e *env) {
 		map[string]any{"id": 2, "type": "snmp", "name": "walk"},
 		map[string]any{"id": 3, "type": "icmp", "name": "ping_host"},
 		map[string]any{"id": 4, "type": "api_data", "name": "host_data"},
+		map[string]any{"id": 5, "type": "meraki", "name": "host_status"},
+		map[string]any{"id": 6, "type": "meraki", "name": "get_all_interfaces"},
 	))
 }
 
@@ -56,39 +58,69 @@ func TestDataSourceResolvesATypeAndNamePair(t *testing.T) {
 	}
 }
 
-// SNMP offers both get and walk and they are not interchangeable. Picking one
-// would produce a check that polls the wrong way and still reports as created.
+// A legacy type offering two actions is refused. Picking one would produce a
+// check that polls the wrong way and still reports as created.
 func TestDataSourceRefusesAnAmbiguousType(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	stubActions(e)
 
 	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU",
-		"--module", "3", "--data-source", "snmp", "--skip-test")
+		"--module", "3", "--data-source", "meraki", "--skip-test")
 	if res.ExitCode != errs.CodeConflict {
 		t.Fatalf("expected conflict exit %d, got %d: %s", errs.CodeConflict, res.ExitCode, res.Stderr)
 	}
-	contains(t, res.Stderr, "snmp:get")
-	contains(t, res.Stderr, "snmp:walk")
+	contains(t, res.Stderr, "meraki:host_status")
+	contains(t, res.Stderr, "meraki:get_all_interfaces")
 	if len(e.stub.requestsTo("POST", "/api/monitoring/items/")) != 0 {
 		t.Error("nothing may be written while the source is ambiguous")
 	}
 }
 
-func TestDataSourceAcceptsAnUnambiguousType(t *testing.T) {
+// api, snmp and icmp are data sources, the model action_type predates. They are
+// written as data_source so the server derives the action, not the other way
+// round -- older servers never derived one from the other.
+func TestDataSourceNamesWriteTheDataSourceField(t *testing.T) {
+	for spec, want := range map[string]float64{"api": 1, "SNMP": 2, "icmp": 3} {
+		t.Run(spec, func(t *testing.T) {
+			e := newEnv(t)
+			e.login()
+			e.org("3")
+			e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55})
+
+			res := e.run("monitoring", "item", "create", "--host", "7", "--name", "x",
+				"--data-source", spec, "--skip-test")
+			if res.ExitCode != 0 {
+				t.Fatalf("create failed: %s", res.Stderr)
+			}
+			body := e.stub.requestsTo("POST", "/api/monitoring/items/")[0].Body
+			if body["data_source"] != want {
+				t.Errorf("expected data_source %v, got %v", want, body["data_source"])
+			}
+			if _, ok := body["action_type"]; ok {
+				t.Error("action_type must be left for the server to derive")
+			}
+			if len(e.stub.requestsTo("GET", actionsPath)) != 0 {
+				t.Error("a data source needs no catalogue lookup")
+			}
+		})
+	}
+}
+
+func TestDataSourceAcceptsAnUnambiguousLegacyType(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.org("3")
 	stubActions(e)
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55})
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "ping",
-		"--data-source", "icmp", "--skip-test")
+	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "x",
+		"--data-source", "api_data", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
-	if got := e.stub.requestsTo("POST", "/api/monitoring/items/"); got[0].Body["action_type"] != float64(3) {
-		t.Errorf("expected action_type 3 (icmp), got %v", got[0].Body["action_type"])
+	if got := e.stub.requestsTo("POST", "/api/monitoring/items/"); got[0].Body["action_type"] != float64(4) {
+		t.Errorf("expected action_type 4 (api_data:host_data), got %v", got[0].Body["action_type"])
 	}
 }
 
