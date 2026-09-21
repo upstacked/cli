@@ -268,3 +268,38 @@ func TestMappingCreateLeavesASingleValuedMappingAlone(t *testing.T) {
 		t.Errorf("a single-valued mapping has no row columns, got %v", got)
 	}
 }
+
+// A template item has no device until it gets a test host. Falling back to
+// 'item test' only adds a second refusal for the same reason.
+func TestMappingOnAHostlessItemSaysHowToGiveItADevice(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", mappingsPath, 201, map[string]any{"id": 91})
+	e.stub.handleMethod("POST", dryRunsPath, 400, map[string]any{
+		"error": "This monitoring item has no host to run against. Attach it to a host, set a test host, or name one in the request.",
+	})
+
+	res := e.run("monitoring", "item", "mapping", "create",
+		"--item", "412", "--schema", "7", "--field", "in_octets=$.x")
+	if res.ExitCode != 0 {
+		t.Fatalf("the mapping was saved, so create must not fail: %s", res.Stderr)
+	}
+	contains(t, res.Stderr, "--test-host")
+	if len(e.stub.requestsTo("POST", "/api/monitoring/item/412/test")) != 0 {
+		t.Error("a test is refused for the same reason; do not run one")
+	}
+}
+
+func TestItemUpdateSetsATestHost(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("PATCH", "/api/monitoring/items/412/", 200, map[string]any{"id": 412})
+
+	res := e.run("monitoring", "item", "update", "412", "--test-host", "205", "--skip-test")
+	if res.ExitCode != 0 {
+		t.Fatalf("update failed: %s", res.Stderr)
+	}
+	if got := e.stub.requestsTo("PATCH", "/api/monitoring/items/412/")[0].Body["test_host"]; got != float64(205) {
+		t.Errorf("expected test_host 205, got %v", got)
+	}
+}

@@ -222,10 +222,11 @@ Two things about this shape trip people up, and both are checked by the CLI:
   template also holds joins that template too. The CLI warns and asks; do not wave it
   through without telling the user which other templates change.
 
-A host-less template item cannot be checked — there is no device to poll until it is
-applied — so the usual create-then-dry-run feedback loop does not run. That is exactly why
-a template should be applied to one host and dry-run there before it is rolled out to the
-rest.
+A host-less template item has no device to poll until it is applied, so the usual
+create-then-dry-run loop has nothing to run against. Give it one with `--test-host
+<host-id>` on `item create` or `item update`: every dry run after a change then runs
+against that device, without applying the template. Without a test host, apply the
+template to one host and dry-run there before rolling it out to the rest.
 
 ### Preflight a runbook before running it
 

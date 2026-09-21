@@ -274,7 +274,7 @@ func newMonItemResultsCmd(app *App) *cobra.Command {
 }
 
 func newMonItemCreateCmd(app *App) *cobra.Command {
-	var host, template, org, name, module, params, credential, credType, description string
+	var host, testHost, template, org, name, module, params, credential, credType, description string
 	var rootPath, fromFile, dataSource string
 	var interval int
 	var skipTest bool
@@ -291,8 +291,8 @@ config would have collected.
 
 With --template the item is created without a host: a blank that the template
 stamps onto every device it is applied to. Write host-specific values as Jinja
-references, e.g. {{ host.i_ip_address }}. A host-less item cannot be checked,
-because there is no device to poll until it is applied.
+references, e.g. {{ host.i_ip_address }}. A host-less item is checked against
+its --test-host; without one there is no device to poll until it is applied.
 
 --data-source is required. It decides whether the check speaks SNMP, HTTP or
 ICMP, and an item without one polls nothing at all - so this refuses rather
@@ -367,6 +367,10 @@ nothing - see 'ups monitoring item mapping'.`,
 				body["credential"] = atoiOr(credential)
 			}
 
+			if testHost != "" {
+				body["test_host"] = atoiOr(testHost)
+			}
+
 			var raw jsonRaw
 			if err := app.mutate("POST", "/api/monitoring/items/", body, &raw); err != nil {
 				return err
@@ -381,13 +385,15 @@ nothing - see 'ups monitoring item mapping'.`,
 			fmt.Fprintf(app.Stderr, "%s Created monitoring item %s (%s)\n",
 				t.Green.Apply(sym.OK), name, id)
 
-			if template != "" {
+			if template != "" && testHost == "" {
 				// Nothing to poll yet, so the usual test is not skipped so much
 				// as impossible. Say which it is.
 				fmt.Fprintf(app.Stderr, "  %s a template item cannot be checked until it is applied to a host.\n",
 					t.Dim.Apply("note:"))
 				fmt.Fprintf(app.Stderr, "  %s ups monitoring template apply %s --host <id>\n",
 					t.Dim.Apply("next:"), template)
+				fmt.Fprintf(app.Stderr, "  %s check it now against one device: ups monitoring item update %s --test-host <host-id>\n",
+					t.Dim.Apply("or:"), id)
 				return nil
 			}
 
@@ -401,6 +407,7 @@ nothing - see 'ups monitoring item mapping'.`,
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "host id (mutually exclusive with --template)")
+	c.Flags().StringVar(&testHost, "test-host", "", "device a template item's checks run against")
 	c.Flags().StringVar(&template, "template", "", "add the item to this monitoring template instead of a host")
 	c.Flags().StringVar(&org, "org", "", "organization id (defaults to yours when you belong to exactly one)")
 	c.Flags().StringVar(&name, "name", "", "item name (required)")
@@ -451,6 +458,16 @@ func (a *App) verifyCreatedItem(id string) {
 			t.Yellow.Apply(sym.Warn), err)
 		fmt.Fprintf(a.Stderr, "  %s an item that collects nothing never alerts. Fix it or remove it.\n",
 			t.Dim.Apply("why it matters:"))
+		return
+	}
+
+	// A test is refused for the same reason, so falling back to one only adds
+	// a second failure. Say how to give the item a device instead.
+	if strings.Contains(err.Error(), "no host to run against") {
+		fmt.Fprintf(a.Stderr, "%s Not checked: item %s has no device to run against.\n",
+			t.Yellow.Apply(sym.Warn), id)
+		fmt.Fprintf(a.Stderr, "  %s ups monitoring item update %s --test-host <host-id>\n",
+			t.Dim.Apply("give it one:"), id)
 		return
 	}
 
@@ -564,11 +581,11 @@ var itemUpdateKeys = map[string]bool{
 	"parameters": true, "response_root_path": true, "timeout": true,
 	"name": true, "description": true, "interval": true,
 	"credential": true, "credential_type": true, "monitoring_module": true,
-	"action_type": true, "data_source": true,
+	"action_type": true, "data_source": true, "test_host": true,
 }
 
 func newMonItemUpdateCmd(app *App) *cobra.Command {
-	var name, description, params, rootPath, credential, credType, host, fromFile, dataSource string
+	var name, description, params, rootPath, credential, credType, host, testHost, fromFile, dataSource string
 	var interval, timeout int
 	var hostSpecific, skipTest bool
 
@@ -618,6 +635,9 @@ dry-runs the item afterwards unless --skip-test.`,
 			if host != "" {
 				body["host"] = atoiOr(host)
 			}
+			if testHost != "" {
+				body["test_host"] = atoiOr(testHost)
+			}
 			if interval > 0 {
 				body["interval"] = interval
 			}
@@ -665,6 +685,7 @@ dry-runs the item afterwards unless --skip-test.`,
 	c.Flags().StringVar(&credential, "credential", "", "credential id")
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&host, "host", "", "repoint the item at another host")
+	c.Flags().StringVar(&testHost, "test-host", "", "device a template item's checks run against")
 	c.Flags().IntVar(&interval, "interval", 0, "polling interval")
 	c.Flags().IntVar(&timeout, "timeout", 0, "per-poll timeout in seconds")
 	c.Flags().BoolVar(&hostSpecific, "host-specific-api-call", false, "the API is called once per host rather than once for all")
