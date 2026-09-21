@@ -302,6 +302,11 @@ paths resolve to nothing.`,
 				return errs.Usage("nothing to change").
 					WithHint("pass --field, --remove-field, --identifier, --multi-valued or --schema")
 			}
+			// Older servers refuse a PATCH without a schema ("Schema must be
+			// provided") even when it is not changing, so resend the current one.
+			if _, ok := body["schema"]; !ok {
+				body["schema"] = current["schema"]
+			}
 
 			if err := app.mutate("PATCH", mappingsPath+args[0]+"/", body, nil); err != nil {
 				return err

@@ -130,13 +130,12 @@ expression and the value it was matched against. That is usually the whole answe
 Viptela, Webex, Cybervision and the legacy `snmp` worker are refused with a message saying
 so. For those, `ups monitoring item test` is the check that still applies.
 
-**Known gap: the dry run may refuse an item that has a data source.** Its check does not
-read `action_type`, so an item created with `--data-source icmp` is still rejected with
-"no data source that can be dry run". Setting the flag again will not fix it and neither
-will another flag — it is a server-side inconsistency between the action-based item model
-and the older dry-run validation. When you hit it, fall back to
-`ups monitoring item test`, say plainly that the stronger check could not run, and do not
-report the item as verified.
+**Older servers refuse a dry run for items typed with `--data-source`.** Their check read a
+legacy field that `action_type` did not fill. If "no data source that can be dry run"
+comes back for an item that has one, set it once more with
+`ups monitoring item update <id> --data-source <type:name>`. If it is still refused, the
+server predates the fix: fall back to `ups monitoring item test`, say plainly that the
+stronger check could not run, and do not report the item as verified.
 
 **A dry run is queued, not synchronous, and handed to an agent exactly once.** It runs on
 the customer's monitoring agent, which polls for work every few seconds, so expect a wait.

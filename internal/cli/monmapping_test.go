@@ -124,6 +124,22 @@ func TestMappingUpdateMergesByKeyAndKeepsFilterRules(t *testing.T) {
 	}
 }
 
+func TestMappingUpdateResendsTheCurrentSchema(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	stubMapping(e)
+
+	res := e.run("monitoring", "item", "mapping", "update", "88",
+		"--field", "in_octets=$.ifHCInOctets", "--skip-test")
+	if res.ExitCode != 0 {
+		t.Fatalf("update failed: %s", res.Stderr)
+	}
+	got := e.stub.requestsTo("PATCH", mappingsPath+"88/")
+	if len(got) != 1 || got[0].Body["schema"] != float64(7) {
+		t.Fatalf("the mapping's schema must be sent even without --schema: %v", got)
+	}
+}
+
 func TestMappingUpdateConfirmsBeforeDroppingAField(t *testing.T) {
 	e := newEnv(t)
 	e.login()
