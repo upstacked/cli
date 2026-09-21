@@ -32,7 +32,7 @@ func TestMappingCreateSendsKeysPathsAndTheIdentifier(t *testing.T) {
 	res := e.run("monitoring", "item", "mapping", "create",
 		"--item", "412", "--schema", "7",
 		"--field", "in_octets=$.ifHCInOctets", "--field", "out_octets=$.ifHCOutOctets",
-		"--identifier", "$.ifName", "--multi-valued", "--skip-test")
+		"--identifier", "in_octets", "--multi-valued", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
@@ -44,7 +44,7 @@ func TestMappingCreateSendsKeysPathsAndTheIdentifier(t *testing.T) {
 	if body["monitoring_item"] != float64(412) || body["schema"] != float64(7) {
 		t.Errorf("item/schema not sent: %v", body)
 	}
-	if body["identifier"] != "$.ifName" || body["is_multi_valued"] != true {
+	if body["identifier"] != "in_octets" || body["is_multi_valued"] != true {
 		t.Errorf("identifier/multi-valued not sent: %v", body)
 	}
 	fields, _ := body["field_mappings"].([]any)
@@ -146,7 +146,7 @@ func TestMappingUpdateOfTheIdentifierResendsTheFields(t *testing.T) {
 	stubMapping(e)
 
 	res := e.run("monitoring", "item", "mapping", "update", "88",
-		"--identifier", "item['$.1'].value", "--skip-test")
+		"--identifier", "in_octets", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("update failed: %s", res.Stderr)
 	}
@@ -260,7 +260,7 @@ func TestMappingCreateDerivesTheRowColumnsOfAMultiValuedMapping(t *testing.T) {
 		"--item", "412", "--schema", "7", "--multi-valued",
 		"--field", "name="+name,
 		"--field", "in_octets=item['$.1.3.6.1.2.1.31.1.1.1.6'].value",
-		"--identifier", name, "--skip-test")
+		"--identifier", "name", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
@@ -325,5 +325,24 @@ func TestItemUpdateSetsATestHost(t *testing.T) {
 	// Older servers reset whatever a PATCH leaves out.
 	if body["parameters"] != `{"oid": ["1.3.6.1.2.1.31.1.1.1.1"]}` || body["description"] != "ports" {
 		t.Errorf("the stored parameters and description must be resent: %v", body)
+	}
+}
+
+// The engine reads the identifier out of the mapped row by key, so a path
+// finds nothing and every row's alerts share one identity.
+func TestMappingRefusesAPathAsTheIdentifier(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+
+	res := e.run("monitoring", "item", "mapping", "create",
+		"--item", "412", "--schema", "7", "--multi-valued",
+		"--field", "name=item['$.1.3.6.1.2.1.31.1.1.1.1'].value",
+		"--identifier", "item['$.1.3.6.1.2.1.31.1.1.1.1'].value", "--skip-test")
+	if res.ExitCode != errs.CodeUsage {
+		t.Fatalf("expected usage exit, got %d: %s", res.ExitCode, res.Stderr)
+	}
+	contains(t, res.Stderr, "one of name")
+	if len(e.stub.requestsTo("POST", mappingsPath)) != 0 {
+		t.Error("nothing may be written with an identifier the engine cannot find")
 	}
 }

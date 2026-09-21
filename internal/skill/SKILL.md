@@ -389,10 +389,13 @@ to get wrong by hand:
   saves fine and polls nothing. The portal splits the string when it opens the
   item, so write the string form (servers normalise a list, older ones do not).
 - **A table is a `--multi-valued` mapping.** Each row reads a column as
-  `item['$.<column-oid>'].value`, and `.key` is the row's index. Use one column
-  (usually the name) as `--identifier`, or every row collapses onto one series.
-  The row columns the engine joins on (`selected_json_path`) are derived from
-  the paths in `--field` and `--identifier`, so name every column you read there.
+  `item['$.<column-oid>'].value`, and `.key` is the row's index. The row columns
+  the engine joins on (`selected_json_path`) are derived from the `--field`
+  paths.
+- **`--identifier` is a schema key, not a path** — one of the keys you gave
+  `--field`, usually the index or the name. The engine reads it from the
+  mapped row by key; a path finds nothing, and every row's alerts then share
+  one identity. `ups` refuses anything that is not one of the mapping's keys.
 
 A dry run of the item then settles the rest.
 
@@ -463,7 +466,7 @@ failure mode this whole section is arranged to avoid.
 ```
 ups monitoring item mapping create --item <item-id> --schema 7 --field in_octets=$.ifHCInOctets
 ups monitoring item mapping list --item <item-id>
-ups monitoring item mapping update <mapping-id> --identifier '$.ifName' --multi-valued
+ups monitoring item mapping update <mapping-id> --identifier if_name --multi-valued
 ```
 
 `--field key=path` puts the schema key on the left and the JSON path on the
@@ -471,7 +474,7 @@ right. Paths are evaluated after `response_root_path` has been applied, so
 write them relative to that root and not to the whole body.
 
 `--multi-valued` is for a response carrying many rows, and it needs
-`--identifier`: the path that tells the rows apart. Without one every interface
+`--identifier`: the schema key whose value tells the rows apart. Without one every interface
 on the switch **collapses onto one series**, which reads as working monitoring
 and is not.
 

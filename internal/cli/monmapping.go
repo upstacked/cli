@@ -144,10 +144,11 @@ func newMonMappingCreateCmd(app *App) *cobra.Command {
 into the response on the right. Paths are relative to the item's
 'response_root_path'.
 
---identifier is the path that tells rows apart when the response carries many
-of them - the interface name, the sensor id, the disk. A --multi-valued
-mapping without one collapses every row onto a single series, which looks
-like working monitoring and is not.
+--identifier is the schema key whose value tells rows apart when the response
+carries many of them - the interface index or name, the sensor id, the disk.
+It names one of the keys given to --field, not a path: the engine reads the
+identifier from the mapped row. A --multi-valued mapping without one collapses
+every row onto a single series, which looks like working monitoring and is not.
 
 --from-file takes the whole request body as JSON, for the parts flags do not
 express: per-field 'filter_rules', 'value_mapping' references and
@@ -156,8 +157,8 @@ express: per-field 'filter_rules', 'value_mapping' references and
 The item is dry-run afterwards, because a mapping is exactly the kind of
 config that is structurally valid and collects nothing.`,
 		Example: `  ups monitoring item mapping create --item 412 --schema 7 \
-    --field in_octets=$.ifHCInOctets --field out_octets=$.ifHCOutOctets \
-    --identifier '$.ifName' --multi-valued
+    --field if_name=$.ifName --field in_octets=$.ifHCInOctets \
+    --identifier if_name --multi-valued
   ups monitoring item mapping create --item 412 --schema 7 --from-file mapping.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if item == "" {
@@ -187,6 +188,9 @@ config that is structurally valid and collects nothing.`,
 			}
 			body["field_mappings"] = merged
 			if identifier != "" {
+				if err := checkIdentifier(identifier, fieldsFromBody(body)); err != nil {
+					return err
+				}
 				body["identifier"] = identifier
 			}
 			if cmd.Flags().Changed("multi-valued") {
@@ -201,7 +205,7 @@ config that is structurally valid and collects nothing.`,
 				body["selected_json_path"] = map[string]any{}
 			}
 			if cols := rowColumns(isMulti(body), body["selected_json_path"],
-				fieldsFromBody(body), str(row(body), "identifier")); cols != nil {
+				fieldsFromBody(body)); cols != nil {
 				body["selected_json_path"] = cols
 			}
 
@@ -228,7 +232,7 @@ config that is structurally valid and collects nothing.`,
 	c.Flags().StringVar(&item, "item", "", "monitoring item id (required)")
 	c.Flags().StringVar(&schema, "schema", "", "data schema id (required)")
 	c.Flags().StringArrayVar(&fields, "field", nil, "schema key and JSON path, as key=path (repeatable)")
-	c.Flags().StringVar(&identifier, "identifier", "", "JSON path that distinguishes rows in a multi-valued response")
+	c.Flags().StringVar(&identifier, "identifier", "", "the --field key whose value tells rows apart in a multi-valued response")
 	c.Flags().BoolVar(&multi, "multi-valued", false, "the response carries many rows, not one")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON request body; flags override it")
 	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not dry-run the item afterwards")
@@ -256,7 +260,7 @@ The item is dry-run afterwards: a change to a mapping invalidates whatever
 dry run had confirmed the item, and the platform will not tell you the new
 paths resolve to nothing.`,
 		Example: `  ups monitoring item mapping update 88 --field in_octets=$.ifHCInOctets
-  ups monitoring item mapping update 88 --identifier '$.ifName' --multi-valued
+  ups monitoring item mapping update 88 --identifier if_name --multi-valued
   ups monitoring item mapping update 88 --remove-field errors`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -312,8 +316,13 @@ paths resolve to nothing.`,
 			for k, v := range body {
 				after[k] = v
 			}
+			if identifier != "" {
+				if err := checkIdentifier(identifier, mappingFields(after)); err != nil {
+					return err
+				}
+			}
 			if cols := rowColumns(isMulti(after), after["selected_json_path"],
-				mappingFields(after), str(after, "identifier")); cols != nil {
+				mappingFields(after)); cols != nil {
 				body["selected_json_path"] = cols
 			}
 
@@ -345,7 +354,7 @@ paths resolve to nothing.`,
 	c.Flags().StringArrayVar(&fields, "field", nil, "schema key and JSON path, as key=path (repeatable, merged by key)")
 	c.Flags().StringArrayVar(&removeFields, "remove-field", nil, "stop filling this schema key (repeatable)")
 	c.Flags().BoolVar(&replace, "replace-fields", false, "make --field the complete set, dropping any key not named")
-	c.Flags().StringVar(&identifier, "identifier", "", "JSON path that distinguishes rows")
+	c.Flags().StringVar(&identifier, "identifier", "", "the field key whose value tells rows apart")
 	c.Flags().BoolVar(&multi, "multi-valued", false, "the response carries many rows, not one")
 	c.Flags().StringVar(&schema, "schema", "", "move the mapping to another data schema")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON request body; flags override it")
@@ -511,15 +520,14 @@ var rowColumnRef = regexp.MustCompile(`item\[['"](\$[^'"]+)['"]\]`)
 // rowColumns derives selected_json_path for a multi-valued mapping that has
 // none, or returns nil. The engine joins rows across exactly those collections,
 // so an empty one itemizes nothing: the mapping saves, dry-runs to zero rows,
-// and publishes nothing. Every collection a field or the identifier reads is
-// one it needs.
-func rowColumns(multi bool, existing any, fields []row, identifier string) []any {
+// and publishes nothing. Every collection a field reads is one it needs.
+func rowColumns(multi bool, existing any, fields []row) []any {
 	if !multi || !emptyJSON(existing) {
 		return nil
 	}
 	var cols []any
 	seen := map[string]bool{}
-	for _, expr := range append(fieldPaths(fields), identifier) {
+	for _, expr := range fieldPaths(fields) {
 		for _, m := range rowColumnRef.FindAllStringSubmatch(expr, -1) {
 			if !seen[m[1]] {
 				seen[m[1]] = true
@@ -528,6 +536,22 @@ func rowColumns(multi bool, existing any, fields []row, identifier string) []any
 		}
 	}
 	return cols
+}
+
+// checkIdentifier refuses an identifier that is not one of the mapping's keys.
+// The engine looks the identifier up in the mapped row by key; a path or an
+// unmapped key finds nothing, so every row's alerts share one identity.
+func checkIdentifier(identifier string, fields []row) error {
+	var keys []string
+	for _, f := range fields {
+		k := str(f, "key")
+		if k == identifier {
+			return nil
+		}
+		keys = append(keys, k)
+	}
+	return errs.Usage("--identifier %q is not one of this mapping's keys", identifier).
+		WithHint("name the schema key whose value tells rows apart, not a path: one of %s", strings.Join(keys, ", "))
 }
 
 func fieldPaths(fields []row) []string {
