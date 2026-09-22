@@ -553,7 +553,10 @@ because its module is in that template's set. A module added to two templates
 carries its items into both — the point when the checks really are the same,
 and a surprise when they are not.
 
-Apply to **one** host and dry-run there before rolling out. A template item has
+Apply to **one** host and dry-run there before rolling out. Then confirm the data
+arrived, with the labels people will see: `ups monitoring schema data <host-id>
+<schema-id>` shows the newest row per identifier, value mappings applied. No rows
+after two polling intervals means nothing reached the portal. A template item has
 no device to poll, so nothing has checked it until it lands on one. Applying it
 to fifty hosts first produces fifty unverified checks, and per the coverage
 rule, no alert about any of them.

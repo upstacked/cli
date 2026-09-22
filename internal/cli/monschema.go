@@ -40,7 +40,7 @@ already monitored has the answer for this one, and copying a working mapping
 beats deriving one.`,
 	}
 	c.AddCommand(newMonSchemaListCmd(app), newMonSchemaShowCmd(app), newMonSchemaHostCmd(app),
-		newMonSchemaCreateCmd(app), newMonSchemaAddKeyCmd(app))
+		newMonSchemaDataCmd(app), newMonSchemaCreateCmd(app), newMonSchemaAddKeyCmd(app))
 	return c
 }
 
@@ -143,6 +143,111 @@ deciding from scratch and discovering the gap during an incident.`,
 			})
 		},
 	}
+}
+
+// newMonSchemaDataCmd shows what a host has actually published into a schema.
+func newMonSchemaDataCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "data <host-id> <schema-id>",
+		Short: "Show the latest data a host published into a schema, as the portal shows it",
+		Long: `Show the newest row a host has published into a schema over the last day,
+one per identifier (interface, sensor, disk), with value mappings applied the
+way the host page shows them: "UP" where the device sent 1.
+
+This is the end of the feedback loop. A dry run proves what an item would
+publish; this proves the agent actually published it, into the fields the
+portal reads. No rows means nothing arrived: the item is not scheduled, the
+host is not in monitoring, or the agent cannot reach the device.`,
+		Example: `  ups monitoring schema data 205 2`,
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := app.Client()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := app.Ctx()
+			defer cancel()
+			var raw jsonRaw
+			path := "/api/monitoring-metrics/host/" + args[0] + "/data-schema/" + args[1] + "/data/"
+			if err := c.Do(ctx, request("GET", path, nil), &raw); err != nil {
+				return err
+			}
+			rows := latestRows(raw)
+			if app.AsJSON {
+				b, _ := json.Marshal(rows)
+				return app.Printer.Object(b, nil)
+			}
+			var keys []string
+			seen := map[string]bool{"value_mapping": true}
+			for _, r := range rows {
+				for _, k := range sortedKeys(r) {
+					if !seen[k] {
+						seen[k] = true
+						keys = append(keys, k)
+					}
+				}
+			}
+			t := &output.Table{
+				Columns: keys,
+				Empty:   "No data in the last day. Nothing this host collects has reached this schema.",
+			}
+			for i, r := range rows {
+				cells := make([]string, len(keys))
+				for j, k := range keys {
+					cells[j] = dash(mappedCell(r, k))
+				}
+				rawRow, _ := json.Marshal(r)
+				t.Add(fmt.Sprint(i), rawRow, cells...)
+			}
+			return app.Printer.Print(t)
+		},
+	}
+}
+
+// latestRows reduces the data endpoint's answer to the newest row per
+// identifier. It answers {identifier: [rows]} for a schema with an identifier
+// and a bare list of rows for one without.
+func latestRows(raw jsonRaw) []row {
+	newest := func(list []any) row {
+		var best row
+		for _, v := range list {
+			r, ok := v.(map[string]any)
+			if ok && (best == nil || str(row(r), "timestamp") > str(best, "timestamp")) {
+				best = row(r)
+			}
+		}
+		return best
+	}
+	var byID map[string][]any
+	if json.Unmarshal(raw, &byID) == nil {
+		out := make([]row, 0, len(byID))
+		for _, id := range sortedKeys(byID) {
+			if r := newest(byID[id]); r != nil {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	var list []any
+	if json.Unmarshal(raw, &list) == nil {
+		if r := newest(list); r != nil {
+			return []row{r}
+		}
+	}
+	return nil
+}
+
+// mappedCell renders a field as the portal does: the value mapping's label
+// when one matched, the raw value otherwise.
+func mappedCell(r row, key string) string {
+	if vm, ok := r["value_mapping"].(map[string]any); ok {
+		if m, ok := vm[key].(map[string]any); ok {
+			if label := str(row(m), "mapped_value"); label != "" {
+				return label
+			}
+		}
+	}
+	return str(r, key)
 }
 
 func schemaFields(m row) []row {

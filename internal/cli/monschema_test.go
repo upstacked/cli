@@ -163,3 +163,24 @@ func TestCreatePrintsTheNewRecordForScripts(t *testing.T) {
 		t.Fatalf("--json must print the new record, got %q", res.Stdout)
 	}
 }
+
+func TestSchemaDataShowsTheNewestRowPerIdentifierWithLabels(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("GET", "/api/monitoring-metrics/host/205/data-schema/2/data/", 200, map[string]any{
+		"1": []any{
+			map[string]any{"name": "Gi0/1", "oper__status": "2", "timestamp": "2026-09-22T12:00:00Z"},
+			map[string]any{"name": "Gi0/1", "oper__status": "1", "timestamp": "2026-09-22T12:05:00Z",
+				"value_mapping": map[string]any{"oper__status": map[string]any{"mapped_value": "UP", "color": "green"}}},
+		},
+	})
+
+	res := e.run("monitoring", "schema", "data", "205", "2")
+	if res.ExitCode != 0 {
+		t.Fatalf("data failed: %s", res.Stderr)
+	}
+	contains(t, res.Stdout, "UP")
+	if strings.Contains(res.Stdout, "12:00:00") {
+		t.Errorf("only the newest row per identifier should show:\n%s", res.Stdout)
+	}
+}
