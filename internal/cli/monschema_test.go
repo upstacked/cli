@@ -184,3 +184,27 @@ func TestSchemaDataShowsTheNewestRowPerIdentifierWithLabels(t *testing.T) {
 		t.Errorf("only the newest row per identifier should show:\n%s", res.Stdout)
 	}
 }
+
+// A module takes its items with it, including copies applied to hosts, so the
+// confirmation has to say which hosts lose monitoring.
+func TestModuleDeleteNamesTheHostsThatLoseMonitoring(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("GET", "/api/monitoring/items/", 200, page(
+		map[string]any{"id": 1, "monitoring_module": 40, "host_name": "Border"},
+		map[string]any{"id": 2, "monitoring_module": 40},
+		map[string]any{"id": 3, "monitoring_module": 41, "host_name": "Fusion"},
+	))
+
+	res := e.runStdin("n\n", "monitoring", "module", "delete", "40")
+	if res.ExitCode == 0 {
+		t.Fatal("declining must not delete")
+	}
+	contains(t, res.Stderr+res.Stdout, "Border")
+	if strings.Contains(res.Stderr+res.Stdout, "Fusion") {
+		t.Error("items in other modules are not affected")
+	}
+	if n := len(e.stub.requestsTo("DELETE", "/api/monitoring/modules/40/")); n != 0 {
+		t.Errorf("nothing should be deleted, got %d", n)
+	}
+}

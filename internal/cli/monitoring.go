@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -567,9 +568,57 @@ this always confirms.`,
 	}
 }
 
+func newMonModuleDeleteCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <id>",
+		Short: "Delete a monitoring module and every item in it",
+		Long: `Delete a monitoring module.
+
+The platform deletes every item in the module with it - template items and the
+copies already applied to hosts alike - and nothing alerts when their checks
+stop. The confirmation names the hosts that would lose monitoring.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			items, err := app.fetchRows("/api/monitoring/items/",
+				url.Values{"monitoring_module": {args[0]}})
+			if err != nil {
+				return err
+			}
+			var inModule int
+			hosts := map[string]bool{}
+			for _, it := range items {
+				if str(it, "monitoring_module") != args[0] {
+					continue
+				}
+				inModule++
+				if h := str(it, "host_name", "host"); h != "" {
+					hosts[h] = true
+				}
+			}
+			prompt := fmt.Sprintf("Delete module %s? It holds no items.", args[0])
+			if inModule > 0 {
+				prompt = fmt.Sprintf("Delete module %s and its %d item(s)?", args[0], inModule)
+			}
+			if len(hosts) > 0 {
+				prompt += fmt.Sprintf(" Monitoring stops silently on: %s.", strings.Join(sortedKeys(hosts), ", "))
+			}
+			if err := app.Confirm(prompt); err != nil {
+				return err
+			}
+			if err := app.mutate("DELETE", "/api/monitoring/modules/"+args[0]+"/", nil, nil); err != nil {
+				return err
+			}
+			if !app.DryRun {
+				app.Printer.Infof("Deleted monitoring module %s.", args[0])
+			}
+			return nil
+		},
+	}
+}
+
 func newMonModuleCmd(app *App) *cobra.Command {
 	c := &cobra.Command{Use: "module", Short: "Monitoring modules (check definitions)"}
-	c.AddCommand(newMonModuleCreateCmd(app))
+	c.AddCommand(newMonModuleCreateCmd(app), newMonModuleDeleteCmd(app))
 	c.AddCommand(&cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
