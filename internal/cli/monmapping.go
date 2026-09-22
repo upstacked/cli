@@ -571,7 +571,7 @@ func droppedKeys(before []row, after []any) []string {
 	return lost
 }
 
-var rowColumnRef = regexp.MustCompile(`item\[['"](\$[^'"]+)['"]\]`)
+var rowColumnRef = regexp.MustCompile(`item\[['"](\$[^'"]*)['"]\]`)
 
 // rowColumns derives selected_json_path for a multi-valued mapping that has
 // none, or returns nil. The engine joins rows across exactly those collections,

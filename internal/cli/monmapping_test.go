@@ -346,3 +346,15 @@ func TestMappingRefusesAPathAsTheIdentifier(t *testing.T) {
 		t.Error("nothing may be written with an identifier the engine cannot find")
 	}
 }
+
+// An API that answers with a list of rows has them at the document root, so
+// every field reads item['$']; that root is the one row collection there is.
+func TestRowColumnsIncludeTheDocumentRoot(t *testing.T) {
+	cols := rowColumns(true, map[string]any{}, []row{
+		{"key": "port__i_d", "path": "item['$'].portId"},
+		{"key": "oper__status", "path": `item['$'].status == "Connected"`},
+	})
+	if len(cols) != 1 || cols[0] != "$" {
+		t.Fatalf("want [\"$\"], got %v", cols)
+	}
+}
