@@ -38,7 +38,7 @@ publishing any of it.`,
 	}
 	c.AddCommand(newMonItemCmd(app), newMonModuleCmd(app), newMonTemplateCmd(app),
 		newMonSchemaCmd(app), newMonActionCmd(app), newMonHostsCmd(app),
-		newMonIntervalCmd(app))
+		newMonIntervalCmd(app), newMonValueMapCmd(app))
 	return c
 }
 

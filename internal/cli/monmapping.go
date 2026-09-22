@@ -132,7 +132,7 @@ func newMonMappingShowCmd(app *App) *cobra.Command {
 
 func newMonMappingCreateCmd(app *App) *cobra.Command {
 	var item, schema, identifier, fromFile string
-	var fields []string
+	var fields, valueMaps []string
 	var multi, skipTest bool
 
 	c := &cobra.Command{
@@ -150,9 +150,13 @@ It names one of the keys given to --field, not a path: the engine reads the
 identifier from the mapped row. A --multi-valued mapping without one collapses
 every row onto a single series, which looks like working monitoring and is not.
 
+--value-mapping key=<id|name> shows a field through a value mapping ("1" as
+UP in green). Reuse one from 'ups monitoring value-mapping list' before
+creating another.
+
 --from-file takes the whole request body as JSON, for the parts flags do not
-express: per-field 'filter_rules', 'value_mapping' references and
-'alert_rule_config'. Flags override what the file sets.
+express: per-field 'filter_rules' and 'alert_rule_config'. Flags override
+what the file sets.
 
 The item is dry-run afterwards, because a mapping is exactly the kind of
 config that is structurally valid and collects nothing.`,
@@ -185,6 +189,9 @@ config that is structurally valid and collects nothing.`,
 			if len(merged) == 0 {
 				return errs.Usage("a mapping with no fields publishes nothing").
 					WithHint("add at least one: --field <schema-key>=<json-path>   (keys: ups monitoring schema show %s)", str(row(body), "schema"))
+			}
+			if err := app.attachValueMappings(merged, valueMaps); err != nil {
+				return err
 			}
 			body["field_mappings"] = merged
 			if identifier != "" {
@@ -233,6 +240,7 @@ config that is structurally valid and collects nothing.`,
 	c.Flags().StringVar(&schema, "schema", "", "data schema id (required)")
 	c.Flags().StringArrayVar(&fields, "field", nil, "schema key and JSON path, as key=path (repeatable)")
 	c.Flags().StringVar(&identifier, "identifier", "", "the --field key whose value tells rows apart in a multi-valued response")
+	c.Flags().StringArrayVar(&valueMaps, "value-mapping", nil, "show a field through a value mapping, as key=<id|name> (repeatable)")
 	c.Flags().BoolVar(&multi, "multi-valued", false, "the response carries many rows, not one")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON request body; flags override it")
 	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not dry-run the item afterwards")
@@ -241,7 +249,7 @@ config that is structurally valid and collects nothing.`,
 
 func newMonMappingUpdateCmd(app *App) *cobra.Command {
 	var schema, identifier, fromFile string
-	var fields, removeFields []string
+	var fields, removeFields, valueMaps []string
 	var multi, replace, skipTest bool
 
 	c := &cobra.Command{
@@ -306,6 +314,16 @@ paths resolve to nothing.`,
 				}
 				body["field_mappings"] = merged
 			}
+			if len(valueMaps) > 0 {
+				base, _ := body["field_mappings"].([]any)
+				if base == nil {
+					base, _ = current["field_mappings"].([]any)
+				}
+				if err := app.attachValueMappings(base, valueMaps); err != nil {
+					return err
+				}
+				body["field_mappings"] = base
+			}
 
 			// The mapping as it will be after this PATCH, to derive its row
 			// columns from.
@@ -328,7 +346,7 @@ paths resolve to nothing.`,
 
 			if len(body) == 0 {
 				return errs.Usage("nothing to change").
-					WithHint("pass --field, --remove-field, --identifier, --multi-valued or --schema")
+					WithHint("pass --field, --remove-field, --value-mapping, --identifier, --multi-valued or --schema")
 			}
 			// Older servers refuse a PATCH without a schema ("Schema must be
 			// provided") or without fields, even when neither is changing, so
@@ -355,6 +373,7 @@ paths resolve to nothing.`,
 	c.Flags().StringArrayVar(&removeFields, "remove-field", nil, "stop filling this schema key (repeatable)")
 	c.Flags().BoolVar(&replace, "replace-fields", false, "make --field the complete set, dropping any key not named")
 	c.Flags().StringVar(&identifier, "identifier", "", "the field key whose value tells rows apart")
+	c.Flags().StringArrayVar(&valueMaps, "value-mapping", nil, "show a field through a value mapping, as key=<id|name>, or key=none to stop (repeatable)")
 	c.Flags().BoolVar(&multi, "multi-valued", false, "the response carries many rows, not one")
 	c.Flags().StringVar(&schema, "schema", "", "move the mapping to another data schema")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON request body; flags override it")
@@ -416,6 +435,43 @@ func (a *App) verifyMappedItem(item string, skip bool) {
 	a.verifyCreatedItem(item)
 }
 
+// attachValueMappings sets --value-mapping key=<id|name> on the matching
+// fields, in place. "none" detaches one.
+func (a *App) attachValueMappings(fields []any, specs []string) error {
+	for _, spec := range specs {
+		key, ref, ok := strings.Cut(spec, "=")
+		key, ref = strings.TrimSpace(key), strings.TrimSpace(ref)
+		if !ok || key == "" || ref == "" {
+			return errs.Usage("--value-mapping takes key=<id|name>, got %q", spec).
+				WithHint("for example: --value-mapping oper_status=ifOperStatus")
+		}
+		var target map[string]any
+		var keys []string
+		for _, v := range fields {
+			if f, ok := v.(map[string]any); ok {
+				if str(row(f), "key") == key {
+					target = f
+				}
+				keys = append(keys, str(row(f), "key"))
+			}
+		}
+		if target == nil {
+			return errs.Usage("--value-mapping %q: the mapping has no field %q", spec, key).
+				WithHint("one of: %s", strings.Join(keys, ", "))
+		}
+		if strings.EqualFold(ref, "none") {
+			target["value_mapping"] = nil
+			continue
+		}
+		id, err := a.resolveValueMapping(ref)
+		if err != nil {
+			return err
+		}
+		target["value_mapping"] = atoiOr(id)
+	}
+	return nil
+}
+
 // mappingBody reads the optional --from-file body.
 func mappingBody(path string) (map[string]any, error) {
 	if path == "" {
@@ -471,8 +527,8 @@ func mergeFields(base []row, add, remove []string, replace bool) ([]any, error) 
 				WithHint("for example: --field in_octets=$.ifHCInOctets")
 		}
 		if existing, seen := byKey[key]; seen {
-			// Keep filter_rules and value_mapping: they are not expressible as
-			// flags, so replacing the whole entry would drop them unasked.
+			// Keep filter_rules and value_mapping: replacing the whole entry to
+			// change its path would drop them unasked.
 			existing["path"] = path
 			byKey[key] = existing
 			continue

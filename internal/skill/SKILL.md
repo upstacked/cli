@@ -493,14 +493,50 @@ and is not.
 
 `update --field` merges by key. Changing one path leaves the other fields
 alone, and keeps the `filter_rules` and `value_mapping` on the field being
-changed, because neither is expressible as a flag and dropping them unasked
-would be a silent change of meaning. `--remove-field` and `--replace-fields`
-do remove coverage, and both confirm first.
+changed, because dropping them unasked would be a silent change of meaning.
+`--remove-field` and `--replace-fields` do remove coverage, and both confirm
+first.
 
-For the parts flags cannot express — filter rules, value mappings, alert rule
-config — `--from-file` takes the whole request body, and
-`dry-run --from-file` will preview a `schema_mapping` before any of it is
-written.
+For the parts flags cannot express — filter rules and alert rule config —
+`--from-file` takes the whole request body, and `dry-run --from-file` will
+preview a `schema_mapping` before any of it is written.
+
+### 4b. Make the values readable: value mappings
+
+A field publishes what the device sent: `1`, `true`, `1000000000`. A value
+mapping is what shows that as **UP** in green on the host page. Map every field
+whose raw value a person cannot read at a glance — status codes, booleans,
+enumerations like duplex, speeds in bits per second.
+
+```
+ups monitoring value-mapping list                      # reuse first
+ups monitoring value-mapping show ifOperStatus
+ups monitoring value-mapping create --name ifOperStatus \
+  --rule 1=UP@green --rule 2=DOWN@red --rule 3=TESTING@yellow
+ups monitoring item mapping update <mapping-id> --value-mapping oper_status=ifOperStatus
+```
+
+**Reuse before creating.** The organization usually has one already for the
+common cases (interface status, duplex, speed), the portal lists them by name,
+and `create` refuses a duplicate name. Pick the existing mapping whose rules
+match the raw values the dry run or `host walk` showed — `show` prints them —
+and create one only when none does.
+
+Rules are tried in order and the first match wins: `VALUE=LABEL[@COLOUR]` for
+equality (compared as text, any case), `range:LOW-HIGH=`, `gte:N=`, `lte:N=` for
+whole numbers, and `default=` for everything else. A label may use
+`{{ value }}`, as in `default={{ value // 1000000 }} Mbps`. Colours are green,
+red, yellow, orange and blue. A value no rule matches shows as sent.
+
+Value mappings change only what people see — stored data and alert rules read
+the raw value, so an alert rule on status still compares against `2`, not
+`DOWN`. A dry run shows raw values for the same reason; the mapped label is
+checked on the host page after applying.
+
+Applying a template **copies** each value mapping's rules onto the host's items.
+Editing a value mapping later changes future applies, not hosts it was already
+applied to; re-apply the template to pick the change up. `value-mapping update
+--rule` replaces the whole rule list, in the order given.
 
 ### 5. Group items into modules, modules into templates
 
@@ -658,6 +694,7 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 | monitoring **event** | A fired alert. |
 | data **schema** | The named fields a check publishes into. Shared: graphs and alert rules read them by name. |
 | schema **mapping** | One item's wiring from response paths onto those fields. Per item, not shared. |
+| **value** mapping | How a field's raw value reads on the portal (`1` → UP in green). Shared by name; copied onto hosts when a template is applied. Changes nothing stored or alerted on. |
 | `ups mib walk` | Reads the local MIB cache. Offline, and never touches the device. |
 | `ups host walk` | Asks the device, through the agent, what it returns. Nothing is saved or published. |
 | `data_source` / `action_type` / worker name | An item's data source. `data_source` (API, SNMP, ICMP) is the current field and what the dry run reads; `action_type` is the legacy one the server derives from it; a dry-run trace names the worker (`snmpstd`, `api_data`, `icmp`). |
