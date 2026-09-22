@@ -120,7 +120,7 @@ func (a *App) setCredential(body map[string]any, credential, tag string) error {
 			tagName := str(objField(c, "tag"), "name")
 			if tag == "" && tagName != "" {
 				body["credential_tag"] = tagName
-			} else if tag != "" && tagName != "" && !strings.EqualFold(tag, tagName) {
+			} else if tag != "" && tagName != "" && tag != tagName {
 				return errs.Usage("credential %s is tagged %q, not %q", credential, tagName, tag).
 					WithHint("drop one of --credential or --credential-tag, or pick a credential with that tag: ups credential list")
 			}
@@ -139,7 +139,7 @@ func (a *App) setCredential(body map[string]any, credential, tag string) error {
 		if str(c, "scope") == "system" {
 			continue
 		}
-		if strings.EqualFold(str(objField(c, "tag"), "name"), tag) {
+		if str(objField(c, "tag"), "name") == tag {
 			matches = append(matches, c)
 		}
 	}
@@ -167,15 +167,27 @@ func (a *App) resolveCredentialTag(spec string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var names []string
+	var names, folded []string
 	for _, r := range rows {
-		if str(r, "id") == spec || strings.EqualFold(str(r, "name"), spec) {
+		if str(r, "id") == spec || str(r, "name") == spec {
 			return str(r, "name"), nil
+		}
+		if strings.EqualFold(str(r, "name"), spec) {
+			folded = append(folded, str(r, "name"))
 		}
 		names = append(names, str(r, "name"))
 	}
-	return "", errs.NotFound("no credential tag %q", spec).
-		WithHint("one of: %s", strings.Join(names, ", "))
+	switch len(folded) {
+	case 1:
+		return folded[0], nil
+	case 0:
+		return "", errs.NotFound("no credential tag %q", spec).
+			WithHint("one of: %s", strings.Join(names, ", "))
+	}
+	// Tags differing only in case pick different credentials, so guessing
+	// would bind the item to whichever came first.
+	return "", errs.Usage("credential tag %q matches %s, which differ only in case", spec, strings.Join(folded, " and ")).
+		WithHint("give the exact name or the tag id: ups credential tags")
 }
 
 func setDefault(m map[string]any, key, value string) {

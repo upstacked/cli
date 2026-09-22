@@ -109,3 +109,34 @@ func TestItemCreateDerivesTheTagFromTheCredential(t *testing.T) {
 		t.Errorf("expected the credential's tag to be set, got %v", got)
 	}
 }
+
+// Staging has both "meraki" and "Meraki", each on different credentials, so a
+// case-insensitive match would bind the item to whichever the API listed first.
+func TestCredentialTagsDifferingOnlyInCaseAreNotGuessed(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.org("2")
+	stubItemRefs(e)
+	e.stub.handleMethod("GET", credentialTagsPath, 200, page(
+		map[string]any{"id": 1, "name": "meraki"},
+		map[string]any{"id": 3, "name": "Meraki"},
+	))
+	e.stub.handleMethod("GET", credentialsPath, 200, page(
+		map[string]any{"id": 3, "scope": "organization", "tag": map[string]any{"id": 3, "name": "Meraki"}, "credential_type": "api"},
+		map[string]any{"id": 4, "scope": "organization", "tag": map[string]any{"id": 1, "name": "meraki"}, "credential_type": "api"},
+	))
+
+	if res := createItem(e, "--interval", "5m", "--credential-tag", "MERAKI"); res.ExitCode == 0 {
+		t.Fatal("a tag matching two names by case must be refused")
+	}
+
+	res := createItem(e, "--interval", "5m", "--credential-tag", "Meraki")
+	if res.ExitCode != 0 {
+		t.Fatalf("an exact name must resolve: %s", res.Stderr)
+	}
+	got := e.stub.requestsTo("POST", "/api/monitoring/items/")
+	body := got[len(got)-1].Body
+	if body["credential"] != float64(3) || body["credential_tag"] != "Meraki" {
+		t.Errorf("exact tag must pick credential 3: %v", body)
+	}
+}
