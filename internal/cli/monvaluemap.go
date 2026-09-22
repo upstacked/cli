@@ -162,7 +162,7 @@ this organization already has, and the portal lists them by name - a second
 				body["description"] = description
 			}
 			var raw jsonRaw
-			if err := app.mutate("POST", valueMappingsPath, body, &raw); err != nil {
+			if err := app.create(valueMappingsPath, body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {

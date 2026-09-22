@@ -176,7 +176,7 @@ here, and the checks themselves are added with
 			}
 
 			var raw jsonRaw
-			if err := app.mutate("POST", templatesPath, body, &raw); err != nil {
+			if err := app.create(templatesPath, body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {

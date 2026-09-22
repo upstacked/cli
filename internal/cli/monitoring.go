@@ -388,7 +388,7 @@ nothing - see 'ups monitoring item mapping'.`,
 			}
 
 			var raw jsonRaw
-			if err := app.mutate("POST", "/api/monitoring/items/", body, &raw); err != nil {
+			if err := app.create("/api/monitoring/items/", body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {
@@ -794,7 +794,7 @@ really are the same, and a surprise when they are not.`,
 			}
 			body := map[string]any{"name": name, "organization": atoiOr(orgID)}
 			var raw jsonRaw
-			if err := app.mutate("POST", "/api/monitoring/modules/", body, &raw); err != nil {
+			if err := app.create("/api/monitoring/modules/", body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {

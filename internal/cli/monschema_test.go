@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/upstacked/cli/internal/errs"
@@ -141,5 +142,24 @@ func TestItemUpdateDryRunsAfterSaving(t *testing.T) {
 	}
 	if len(e.stub.requestsTo("POST", dryRunsPath)) != 1 {
 		t.Error("an edited item must be re-checked, not assumed to still work")
+	}
+}
+
+// A script building a template needs each new id, and a create otherwise only
+// reports it on stderr.
+func TestCreatePrintsTheNewRecordForScripts(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.org("3")
+	e.stub.handleMethod("POST", "/api/monitoring/modules/", 201, map[string]any{"id": 21, "name": "Cisco CPU"})
+
+	res := e.run("monitoring", "module", "create", "--name", "Cisco CPU", "--id-only")
+	if res.ExitCode != 0 || strings.TrimSpace(res.Stdout) != "21" {
+		t.Fatalf("--id-only must print the new id, got %q (%s)", res.Stdout, res.Stderr)
+	}
+	res = e.run("monitoring", "module", "create", "--name", "Cisco CPU", "--json")
+	var m map[string]any
+	if err := json.Unmarshal([]byte(res.Stdout), &m); err != nil || m["id"] != float64(21) {
+		t.Fatalf("--json must print the new record, got %q", res.Stdout)
 	}
 }

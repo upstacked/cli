@@ -732,7 +732,8 @@ exploratory or experimental, confirm the target before proceeding.
 
 - Default output is human tables. Pass `--json` for anything you intend to parse. Never
   parse the table output — it is not a stable interface.
-- `--id-only` emits bare IDs for piping.
+- `--id-only` emits bare IDs for piping. On a `create` it prints the new record's id, and
+  `--json` prints the record: `mod=$(ups monitoring module create --name X --id-only)`.
 - Exit codes are meaningful: `0` ok, `1` general failure, `2` usage error, `3` auth
   failure, `4` not found, `5` conflict/precondition failed. Check them; do not grep stderr.
 - Progress, warnings and truncation notes go to stderr; data goes to stdout. Piping stdout

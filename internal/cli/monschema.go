@@ -219,7 +219,7 @@ device's history across two names that nothing joins back up. Check first:
 				"name": name, "organization": atoiOr(orgID), "fields": parsed,
 			}
 			var raw jsonRaw
-			if err := app.mutate("POST", schemasPath, body, &raw); err != nil {
+			if err := app.create(schemasPath, body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {

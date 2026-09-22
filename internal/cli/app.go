@@ -422,6 +422,25 @@ func (a *App) mutate(method, path string, body any, out any) error {
 	return c.Do(ctx, api.Request{Method: method, Path: path, Body: body}, out)
 }
 
+// create POSTs a new record and, for --json or --id-only, prints what was made.
+// A create reports itself on stderr otherwise, where a script capturing the
+// new id cannot read it.
+func (a *App) create(path string, body any, raw *jsonRaw) error {
+	if err := a.mutate("POST", path, body, raw); err != nil || a.DryRun || len(*raw) == 0 {
+		return err
+	}
+	switch {
+	case a.AsJSON:
+		return a.Printer.Object(*raw, nil)
+	case a.IDOnly:
+		var m row
+		if json.Unmarshal(*raw, &m) == nil && str(m, "id") != "" {
+			fmt.Fprintln(a.Stdout, str(m, "id"))
+		}
+	}
+	return nil
+}
+
 // infraQuery adds the active infrastructure to a query when set.
 func (a *App) infraQuery(extra url.Values) url.Values {
 	q := url.Values{}

@@ -109,7 +109,7 @@ func newHostCreateCmd(app *App) *cobra.Command {
 			addIf(body, "i_mac_address", mac)
 
 			var raw jsonRaw
-			if err := app.mutate("POST", "/api/host/", body, &raw); err != nil {
+			if err := app.create("/api/host/", body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {

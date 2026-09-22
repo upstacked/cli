@@ -147,7 +147,7 @@ CLI prompts for it without echoing.`,
 			}
 
 			var raw jsonRaw
-			if err := app.mutate("POST", "/api/credential/"+seg+"/", body, &raw); err != nil {
+			if err := app.create("/api/credential/"+seg+"/", body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {

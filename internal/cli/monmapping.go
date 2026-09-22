@@ -222,7 +222,7 @@ config that is structurally valid and collects nothing.`,
 			}
 
 			var raw jsonRaw
-			if err := app.mutate("POST", mappingsPath, body, &raw); err != nil {
+			if err := app.create(mappingsPath, body, &raw); err != nil {
 				return err
 			}
 			if app.DryRun {
