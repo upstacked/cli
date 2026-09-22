@@ -150,7 +150,7 @@ item=$(u monitoring item create --template "$tpl" --module "$mod" --test-host "$
 # One document per device or one for many is read off the response, as in the
 # portal's scan step, not known up front.
 u monitoring item dry-run "$item" --host "$API_HOST" --json >"$work/fetch.json" 2>/dev/null
-check "the device answers the call" '.status == "success"' "$work/fetch.json"
+check "the device answers the call" '(.trace.request_status.status // "failed") != "failed"' "$work/fetch.json"
 printf '{"host_specific_api_call": true, "response_root_path": "$"}' >"$work/cfg.json"
 u monitoring item update "$item" --from-file "$work/cfg.json" --skip-test >/dev/null 2>"$work/upd.err" ||
   { fail "save the proved config"; cat "$work/upd.err"; }

@@ -208,3 +208,26 @@ func TestModuleDeleteNamesTheHostsThatLoseMonitoring(t *testing.T) {
 		t.Errorf("nothing should be deleted, got %d", n)
 	}
 }
+
+// Older servers clear the credential tag on a PATCH that leaves it out, and a
+// template item without its tag polls with no credential.
+func TestItemUpdateResendsTheStoredCredentialTag(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("GET", "/api/monitoring/items/412/", 200, map[string]any{
+		"id": 412, "parameters": "{}", "description": "", "credential_tag": "meraki"})
+	e.stub.handleMethod("PATCH", "/api/monitoring/items/412/", 200, map[string]any{"id": 412})
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"host_specific_api_call": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := e.run("monitoring", "item", "update", "412", "--from-file", path, "--skip-test")
+	if res.ExitCode != 0 {
+		t.Fatalf("update failed: %s", res.Stderr)
+	}
+	got := e.stub.requestsTo("PATCH", "/api/monitoring/items/412/")
+	if got[0].Body["credential_tag"] != "meraki" {
+		t.Errorf("the stored tag must be resent: %v", got[0].Body)
+	}
+}

@@ -443,6 +443,35 @@ nothing - see 'ups monitoring item mapping'.`,
 	return c
 }
 
+// patchItem updates a monitoring item without erasing what the body leaves out.
+//
+// Older servers reset parameters, description and the credential tag on any
+// PATCH that omits them, which silently erases an SNMP item's OIDs or leaves a
+// template item polling with no credential. The stored values are sent back
+// when they are not being changed.
+func (a *App) patchItem(id string, body map[string]any) error {
+	keep := []string{"parameters", "description", "credential_tag"}
+	var missing []string
+	for _, k := range keep {
+		if _, ok := body[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 && !a.DryRun {
+		current, _, err := a.getOne("/api/monitoring/items/"+id+"/", nil)
+		if err != nil {
+			return err
+		}
+		body = copyBody(body)
+		for _, k := range missing {
+			if v, ok := current[k]; ok && (k != "credential_tag" || v != nil) {
+				body[k] = v
+			}
+		}
+	}
+	return a.mutate("PATCH", "/api/monitoring/items/"+id+"/", body, nil)
+}
+
 // verifyCreatedItem confirms a freshly created item actually collects something.
 //
 // A dry run is the check that answers the question - it runs the mapping stages
@@ -454,30 +483,6 @@ nothing - see 'ups monitoring item mapping'.`,
 // Nothing here fails the command: the item exists either way, and a caller who
 // is told "created" and nothing else would assume it works. So a failure is
 // always reported, and never reported as a pass.
-// patchItem updates a monitoring item without erasing what the body leaves out.
-//
-// Older servers reset parameters and description on any PATCH that omits them,
-// which silently erases an SNMP item's OIDs. The stored values are sent back
-// when they are not being changed.
-func (a *App) patchItem(id string, body map[string]any) error {
-	_, hasParams := body["parameters"]
-	_, hasDesc := body["description"]
-	if (!hasParams || !hasDesc) && !a.DryRun {
-		current, _, err := a.getOne("/api/monitoring/items/"+id+"/", nil)
-		if err != nil {
-			return err
-		}
-		body = copyBody(body)
-		if !hasParams {
-			body["parameters"] = current["parameters"]
-		}
-		if !hasDesc {
-			body["description"] = current["description"]
-		}
-	}
-	return a.mutate("PATCH", "/api/monitoring/items/"+id+"/", body, nil)
-}
-
 func (a *App) verifyCreatedItem(id string) {
 	t, sym := a.Theme(), a.Sym()
 
