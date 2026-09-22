@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -76,7 +79,10 @@ func (a *App) runChecks(scope skill.Scope) []check {
 	var out []check
 	r := a.Resolved
 
-	// 1. Config file.
+	// 1. CLI version.
+	out = append(out, a.checkVersion())
+
+	// 2. Config file.
 	cfgPath := a.Store.ConfigPath()
 	if _, err := os.Stat(cfgPath); err != nil {
 		out = append(out, check{"config file", statusWarn,
@@ -85,7 +91,7 @@ func (a *App) runChecks(scope skill.Scope) []check {
 		out = append(out, check{"config file", statusPass, cfgPath, ""})
 	}
 
-	// 2. Credential file permissions.
+	// 3. Credential file permissions.
 	if mode, err := config.FileMode(a.Store.CredsPath()); err == nil {
 		if mode&0o077 != 0 {
 			out = append(out, check{"credential permissions", statusFail,
@@ -96,7 +102,7 @@ func (a *App) runChecks(scope skill.Scope) []check {
 		}
 	}
 
-	// 3. Server URL.
+	// 4. Server URL.
 	if !r.APIURL.IsSet() {
 		out = append(out, check{"server url", statusFail, "no server configured",
 			"run: ups init --api-url https://your-upstacked-host"})
@@ -104,7 +110,7 @@ func (a *App) runChecks(scope skill.Scope) []check {
 		out = append(out, check{"server url", statusPass, r.APIURL.Describe(), ""})
 	}
 
-	// 4. Credentials present and bound to this server.
+	// 5. Credentials present and bound to this server.
 	creds, cerr := a.Store.LoadCredentials()
 	envToken := os.Getenv("UPSTACKED_TOKEN") != ""
 	switch {
@@ -121,7 +127,7 @@ func (a *App) runChecks(scope skill.Scope) []check {
 				who = "token stored"
 			}
 			out = append(out, check{"credentials", statusPass, who, ""})
-			// 5. Expiry.
+			// 6. Expiry.
 			//
 			// A short-lived access token is not a problem when a refresh token
 			// is stored: renewal is transparent. Some servers issue tokens that
@@ -161,7 +167,7 @@ func (a *App) runChecks(scope skill.Scope) []check {
 		}
 	}
 
-	// 6. Reachability and identity, in one authenticated call.
+	// 7. Reachability and identity, in one authenticated call.
 	//
 	// Deliberately NOT /api/healthcheck/start/ - that starts a platform-side
 	// scan of a customer infrastructure. /api/status/ is ticket statuses.
@@ -171,7 +177,7 @@ func (a *App) runChecks(scope skill.Scope) []check {
 		out = append(out, check{"server reachable", statusSkip, "no server configured", ""})
 	}
 
-	// 7. Active infrastructure resolves.
+	// 8. Active infrastructure resolves.
 	switch {
 	case !r.Infrastructure.IsSet():
 		out = append(out, check{"infrastructure", statusWarn,
@@ -180,10 +186,94 @@ func (a *App) runChecks(scope skill.Scope) []check {
 		out = append(out, a.checkInfra())
 	}
 
-	// 8-10. Agent skill.
+	// 9-11. Agent skill.
 	out = append(out, a.checkSkill(scope)...)
 
 	return out
+}
+
+// latestReleaseURL is where a newer CLI would be announced. A variable so a
+// test can point it somewhere that is not the internet.
+var latestReleaseURL = "https://api.github.com/repos/upstacked/cli/releases/latest"
+
+// checkVersion reports whether a newer CLI has been released.
+//
+// Never a failure: being a version behind is not a broken setup, and doctor
+// has to stay usable offline and as a CI gate. A release that cannot be read -
+// no network, a rate-limited API, a proxy in the way - is skipped rather than
+// guessed at.
+func (a *App) checkVersion() check {
+	if Version == "dev" || Version == "" {
+		return check{"cli version", statusSkip, "development build", ""}
+	}
+	ctx, cancel := a.Ctx()
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleaseURL, nil)
+	if err != nil {
+		return check{"cli version", statusSkip, Version, ""}
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "ups/"+Version)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return check{"cli version", statusSkip,
+			fmt.Sprintf("%s (could not reach the release feed)", Version), ""}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return check{"cli version", statusSkip,
+			fmt.Sprintf("%s (release feed answered %d)", Version, resp.StatusCode), ""}
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil || release.TagName == "" {
+		return check{"cli version", statusSkip, Version, ""}
+	}
+	if isOlderVersion(Version, release.TagName) {
+		return check{"cli version", statusWarn,
+			fmt.Sprintf("%s is installed, %s is out", Version, release.TagName),
+			"run: brew upgrade --cask upstacked/tools/cli"}
+	}
+	return check{"cli version", statusPass, Version + " is current", ""}
+}
+
+// isOlderVersion compares two semver-ish tags, e.g. "v0.0.20" and "0.1.0".
+// Anything it cannot parse counts as not older, because warning about an
+// upgrade that does not exist is worse than staying quiet.
+func isOlderVersion(have, latest string) bool {
+	h, ok := versionParts(have)
+	l, ok2 := versionParts(latest)
+	if !ok || !ok2 {
+		return false
+	}
+	for i := range h {
+		if h[i] != l[i] {
+			return h[i] < l[i]
+		}
+	}
+	return false
+}
+
+func versionParts(v string) ([3]int, bool) {
+	var out [3]int
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	// Ignore any pre-release or build suffix: 1.2.3-rc1 compares as 1.2.3.
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	fields := strings.Split(v, ".")
+	if len(fields) != 3 {
+		return out, false
+	}
+	for i, f := range fields {
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 func (a *App) checkReachable() check {

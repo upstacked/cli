@@ -690,7 +690,7 @@ There is no log-based device discovery. Discovery is topology scanning — see `
 
 | Looks similar | Actually |
 |---|---|
-| `ups doctor` | Checks **your local setup** — config, auth, context, this skill. Touches nothing remote except to verify the token. |
+| `ups doctor` | Checks **your local setup** — config, auth, context, this skill, and whether a newer CLI is out. Touches nothing remote except to verify the token and read the release feed. |
 | `ups infra healthcheck` | Starts a **platform-side scan of an infrastructure**. A real operation against the customer's environment, and it needs API credentials on the infrastructure. |
 | `/api/status/` | Ticket statuses (a lookup table), not system health. There is no `ups` command for it. |
 | monitoring **module** | The definition of *what* to check. |
@@ -826,3 +826,7 @@ alone. Never rewrite one of those files wholesale.
 If `ups doctor` reports this skill is outdated, run
 `ups skill install --client <id> --force`. A skill that describes a different command
 surface than the installed binary is worse than none.
+
+`doctor` also says when a newer CLI has been released
+(`brew upgrade --cask upstacked/tools/cli`). It is a warning, never a failure, and is
+skipped when the release feed cannot be reached, so `doctor` still works offline.

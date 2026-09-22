@@ -545,3 +545,60 @@ func TestMonitoringItemTestExplainsAnOrganizationScopeFailure(t *testing.T) {
 	}
 	contains(t, res.Stderr, "organization may be outside your scope")
 }
+
+func TestDoctorWarnsWhenANewerCLIIsOut(t *testing.T) {
+	e := newEnv(t)
+	e.stub.handleMethod("GET", "/releases/latest", 200, map[string]any{"tag_name": "v9.9.9"})
+	old := latestReleaseURL
+	latestReleaseURL = e.stub.URL + "/releases/latest"
+	Version = "0.0.20"
+	t.Cleanup(func() { latestReleaseURL, Version = old, "dev" })
+
+	res := e.run("doctor")
+
+	contains(t, res.Stdout, "0.0.20 is installed, v9.9.9 is out")
+	contains(t, res.Stdout, "brew upgrade --cask upstacked/tools/cli")
+}
+
+// Being a version behind is not a broken setup, and doctor has to stay usable
+// offline, so the check never fails a run.
+func TestDoctorTreatsAnUnreachableReleaseFeedAsUnknown(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("42")
+	e.stub.handle("/api/user/details/v2/", 200, map[string]any{"username": "tester"})
+	e.stub.handle("/api/infrastructure/42/", 200, map[string]any{"id": 42, "name": "Acme"})
+	if res := e.run("skill", "install", "--client", "claude"); res.ExitCode != 0 {
+		t.Fatalf("skill install failed: %s", res.Stderr)
+	}
+	old := latestReleaseURL
+	latestReleaseURL = "http://127.0.0.1:1/releases/latest"
+	Version = "0.0.20"
+	t.Cleanup(func() { latestReleaseURL, Version = old, "dev" })
+
+	res := e.run("doctor")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("doctor must still pass offline:\n%s\n%s", res.Stdout, res.Stderr)
+	}
+	contains(t, res.Stdout, "could not reach the release feed")
+}
+
+func TestVersionComparisonIgnoresPrefixesAndPreReleases(t *testing.T) {
+	cases := []struct {
+		have, latest string
+		older        bool
+	}{
+		{"0.0.19", "v0.0.20", true},
+		{"v0.0.20", "v0.0.20", false},
+		{"0.1.0", "v0.0.20", false},
+		{"1.2.3-rc1", "v1.2.3", false},
+		{"dev", "v1.0.0", false},
+		{"0.0.20", "not-a-version", false},
+	}
+	for _, c := range cases {
+		if got := isOlderVersion(c.have, c.latest); got != c.older {
+			t.Errorf("isOlderVersion(%q, %q) = %v", c.have, c.latest, got)
+		}
+	}
+}
