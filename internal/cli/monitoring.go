@@ -307,10 +307,12 @@ one step rather than retyped as flags. Explicit flags override the file.
 The item is only half the check: it says how to reach the data, not what the
 data means. Give it a schema mapping next, or it fetches happily and publishes
 nothing - see 'ups monitoring item mapping'.`,
-		Example: `  ups monitoring item create --host 12 --name "CPU" --module 3 --data-source snmp:walk
-  ups monitoring item create --host 12 --name "API health" --module 7 --data-source api_data --credential-type api
-  ups monitoring item create --host 12 --name "Interfaces" --module 3 --data-source snmp:walk --from-file config.json
-  ups monitoring item create --template 4 --name "uptime" --module 3 --data-source snmp --params '{"oid":"1.3.6.1.2.1.1.3.0"}'`,
+		Example: `  ups monitoring item create --host 12 --name "Interfaces" --module 3 --data-source snmp \
+    --interval 5m --credential-tag SNMPv2 --params '{"oid":"1.3.6.1.2.1.31.1.1.1.1,1.3.6.1.2.1.2.2.1.8"}'
+  ups monitoring item create --host 12 --name "API health" --module 7 --data-source api \
+    --interval 5m --credential 4 --from-file config.json
+  ups monitoring item create --template 4 --test-host 12 --name "uptime" --module 3 --data-source snmp \
+    --interval 5m --credential-tag SNMPv2 --params '{"oid":"1.3.6.1.2.1.1.3.0"}'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
 				return errs.Usage("--name is required")

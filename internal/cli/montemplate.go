@@ -22,7 +22,7 @@ func newMonTemplateCmd(app *App) *cobra.Command {
 A template holds modules; the checks themselves are monitoring items with no
 host, waiting to be stamped onto one. Create those with:
 
-  ups monitoring item create --template <id> --module <id> --name "CPU"
+  ups monitoring item create --template <id> --module <id> --name "CPU" --interval 5m
 
 Applying a template REPLACES a host's monitoring: every existing item on the
 host is deleted first, then the template's items are created in their place.
@@ -153,7 +153,7 @@ func newMonTemplateCreateCmd(app *App) *cobra.Command {
 The template starts empty of checks: modules say what kind of check belongs
 here, and the checks themselves are added with
 
-  ups monitoring item create --template <id> --module <id> --name "CPU"`,
+  ups monitoring item create --template <id> --module <id> --name "CPU" --interval 5m`,
 		Example: `  ups monitoring template create --name "Cisco IOS switch" --module 1,2,3
   ups monitoring template create --name "PLC" --module 2 --org 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -188,7 +188,7 @@ here, and the checks themselves are added with
 			t, sym := app.Theme(), app.Sym()
 			fmt.Fprintf(app.Stderr, "%s Created monitoring template %s (%s)\n",
 				t.Green.Apply(sym.OK), name, id)
-			fmt.Fprintf(app.Stderr, "  %s add a check: ups monitoring item create --template %s --module <id> --name \"CPU\"\n",
+			fmt.Fprintf(app.Stderr, "  %s add a check: ups monitoring item create --template %s --module <id> --name \"CPU\" --interval 5m\n",
 				t.Dim.Apply("next:"), id)
 			return nil
 		},

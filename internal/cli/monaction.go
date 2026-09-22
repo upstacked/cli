@@ -33,7 +33,7 @@ are not interchangeable.
 or a bare type when that type offers exactly one action. It never picks
 between two.`,
 		Example: `  ups monitoring action list
-  ups monitoring item create --host 12 --name CPU --module 3 --data-source snmp:walk`,
+  ups monitoring item create --host 12 --name CPU --module 3 --data-source snmp:walk --interval 5m`,
 	}
 	c.AddCommand(&cobra.Command{
 		Use:     "list",
