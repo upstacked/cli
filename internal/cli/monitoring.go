@@ -37,7 +37,8 @@ pipeline and shows the data the config would have published, without
 publishing any of it.`,
 	}
 	c.AddCommand(newMonItemCmd(app), newMonModuleCmd(app), newMonTemplateCmd(app),
-		newMonSchemaCmd(app), newMonActionCmd(app), newMonHostsCmd(app))
+		newMonSchemaCmd(app), newMonActionCmd(app), newMonHostsCmd(app),
+		newMonIntervalCmd(app))
 	return c
 }
 
@@ -274,9 +275,9 @@ func newMonItemResultsCmd(app *App) *cobra.Command {
 }
 
 func newMonItemCreateCmd(app *App) *cobra.Command {
-	var host, testHost, template, org, name, module, params, credential, credType, description string
+	var host, testHost, template, org, name, module, params, credential, credTag, credType, description, interval string
 	var rootPath, fromFile, dataSource string
-	var interval int
+	var timeout int
 	var skipTest bool
 
 	c := &cobra.Command{
@@ -356,15 +357,28 @@ nothing - see 'ups monitoring item mapping'.`,
 			if module != "" {
 				body["monitoring_module"] = atoiOr(module)
 			}
-			if interval > 0 {
-				body["interval"] = interval
+			if interval != "" {
+				id, err := app.resolveInterval(interval)
+				if err != nil {
+					return err
+				}
+				body["interval"] = id
+			}
+			// Refused rather than defaulted, like --data-source: an item with
+			// no interval is never scheduled, and nothing says so.
+			if _, ok := body["interval"]; !ok {
+				return errs.Usage("--interval is required").
+					WithHint("how often to poll: ups monitoring interval list   (e.g. --interval 5m)")
+			}
+			if timeout > 0 {
+				body["timeout"] = timeout
 			}
 			addIf(body, "parameters", params)
 			addIf(body, "description", description)
 			addIf(body, "credential_type", credType)
 			addIf(body, "response_root_path", rootPath)
-			if credential != "" {
-				body["credential"] = atoiOr(credential)
+			if err := app.setCredential(body, credential, credTag); err != nil {
+				return err
 			}
 
 			if testHost != "" {
@@ -413,13 +427,15 @@ nothing - see 'ups monitoring item mapping'.`,
 	c.Flags().StringVar(&name, "name", "", "item name (required)")
 	c.Flags().StringVar(&module, "module", "", "monitoring module id")
 	c.Flags().StringVar(&params, "params", "", "module parameters")
-	c.Flags().StringVar(&credential, "credential", "", "credential id")
+	c.Flags().StringVar(&credential, "credential", "", "credential id (its tag is set too)")
+	c.Flags().StringVar(&credTag, "credential-tag", "", "credential tag, by name or id (picks this infrastructure's credential with it)")
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&description, "description", "", "description")
 	c.Flags().StringVar(&rootPath, "response-root-path", "", "JSON path the field paths are evaluated relative to")
 	c.Flags().StringVar(&dataSource, "data-source", "", "api, snmp or icmp; or a legacy action id, \"type:name\" or unambiguous type (required)")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON config to start from, in the same shape 'dry-run --from-file' takes")
-	c.Flags().IntVar(&interval, "interval", 0, "polling interval")
+	c.Flags().StringVar(&interval, "interval", "", "how often to poll, e.g. 5m or 1h (required): ups monitoring interval list")
+	c.Flags().IntVar(&timeout, "timeout", 0, "per-poll timeout in seconds")
 	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not verify the item after creating it")
 	return c
 }
@@ -604,13 +620,13 @@ var itemUpdateKeys = map[string]bool{
 	"host": true, "host_specific_api_call": true, "mapping_rules": true,
 	"parameters": true, "response_root_path": true, "timeout": true,
 	"name": true, "description": true, "interval": true,
-	"credential": true, "credential_type": true, "monitoring_module": true,
+	"credential": true, "credential_type": true, "credential_tag": true, "monitoring_module": true,
 	"action_type": true, "data_source": true, "test_host": true,
 }
 
 func newMonItemUpdateCmd(app *App) *cobra.Command {
-	var name, description, params, rootPath, credential, credType, host, testHost, fromFile, dataSource string
-	var interval, timeout int
+	var name, description, params, rootPath, credential, credTag, credType, host, testHost, fromFile, dataSource, interval string
+	var timeout int
 	var hostSpecific, skipTest bool
 
 	c := &cobra.Command{
@@ -653,8 +669,8 @@ dry-runs the item afterwards unless --skip-test.`,
 					return err
 				}
 			}
-			if credential != "" {
-				body["credential"] = atoiOr(credential)
+			if err := app.setCredential(body, credential, credTag); err != nil {
+				return err
 			}
 			if host != "" {
 				body["host"] = atoiOr(host)
@@ -662,8 +678,12 @@ dry-runs the item afterwards unless --skip-test.`,
 			if testHost != "" {
 				body["test_host"] = atoiOr(testHost)
 			}
-			if interval > 0 {
-				body["interval"] = interval
+			if interval != "" {
+				id, err := app.resolveInterval(interval)
+				if err != nil {
+					return err
+				}
+				body["interval"] = id
 			}
 			if timeout > 0 {
 				body["timeout"] = timeout
@@ -706,11 +726,12 @@ dry-runs the item afterwards unless --skip-test.`,
 	c.Flags().StringVar(&params, "params", "", "module parameters")
 	c.Flags().StringVar(&rootPath, "response-root-path", "", "JSON path the field paths are evaluated relative to")
 	c.Flags().StringVar(&dataSource, "data-source", "", "api, snmp or icmp; or a legacy action id, \"type:name\" or unambiguous type")
-	c.Flags().StringVar(&credential, "credential", "", "credential id")
+	c.Flags().StringVar(&credential, "credential", "", "credential id (its tag is set too)")
+	c.Flags().StringVar(&credTag, "credential-tag", "", "credential tag, by name or id (picks this infrastructure's credential with it)")
 	c.Flags().StringVar(&credType, "credential-type", "", "credential type (api, snmpv2, snmpv3, viptela, no auth)")
 	c.Flags().StringVar(&host, "host", "", "repoint the item at another host")
 	c.Flags().StringVar(&testHost, "test-host", "", "device a template item's checks run against")
-	c.Flags().IntVar(&interval, "interval", 0, "polling interval")
+	c.Flags().StringVar(&interval, "interval", "", "how often to poll, e.g. 5m or 1h: ups monitoring interval list")
 	c.Flags().IntVar(&timeout, "timeout", 0, "per-poll timeout in seconds")
 	c.Flags().BoolVar(&hostSpecific, "host-specific-api-call", false, "the API is called once per host rather than once for all")
 	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not dry-run the item after saving")

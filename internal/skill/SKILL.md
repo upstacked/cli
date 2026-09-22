@@ -417,7 +417,9 @@ this is the one job it is better at than a dry run.
 
 ```
 ups monitoring action list
-ups monitoring item create --host 12 --name "Interface counters" --module 3 --data-source snmp
+ups monitoring interval list
+ups monitoring item create --host 12 --name "Interface counters" --module 3 --data-source snmp \
+  --interval 5m --credential-tag SNMPv2 --test-host 12
 ups monitoring item dry-run <item-id> --from-file config.json
 ups monitoring item update <item-id> --from-file config.json
 ```
@@ -425,6 +427,17 @@ ups monitoring item update <item-id> --from-file config.json
 **`--data-source` is required and has no sensible default.** It is what decides
 whether the check speaks SNMP, HTTP or ICMP; an item without one polls nothing,
 so `create` refuses rather than making a check that can never run.
+
+**`--interval` is required for the same reason.** An item with no interval is
+never scheduled, and nothing reports it. It is one of a fixed set of durations
+(`ups monitoring interval list`: 1m, 5m, 15m, 30m, 1h, 2h, 1d); anything else is
+refused rather than rounded. `--timeout` takes seconds.
+
+**Give an item its credential by tag.** `--credential-tag SNMPv2` sets the tag
+and picks this infrastructure's credential with it; `--credential <id>` sets
+the credential and its tag. The portal needs both to open the item, and a
+template uses the tag to find the right credential on each infrastructure it
+is applied to.
 
 Prefer `api`, `snmp` or `icmp`. Those are data sources, the current model: they
 are written as `data_source`, the server derives the legacy `action_type` from

@@ -27,7 +27,7 @@ func TestItemCreateRefusesWithoutADataSource(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU", "--module", "3")
+	res := e.run("monitoring", "item", "create", "--interval", "1", "--host", "7", "--name", "CPU", "--module", "3")
 	if res.ExitCode != errs.CodeUsage {
 		t.Fatalf("expected usage exit %d, got %d: %s", errs.CodeUsage, res.ExitCode, res.Stderr)
 	}
@@ -44,7 +44,7 @@ func TestDataSourceResolvesATypeAndNamePair(t *testing.T) {
 	stubActions(e)
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55})
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU",
+	res := e.run("monitoring", "item", "create", "--interval", "1", "--host", "7", "--name", "CPU",
 		"--module", "3", "--data-source", "snmp:walk", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
@@ -65,7 +65,7 @@ func TestDataSourceRefusesAnAmbiguousType(t *testing.T) {
 	e.login()
 	stubActions(e)
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU",
+	res := e.run("monitoring", "item", "create", "--interval", "1", "--host", "7", "--name", "CPU",
 		"--module", "3", "--data-source", "meraki", "--skip-test")
 	if res.ExitCode != errs.CodeConflict {
 		t.Fatalf("expected conflict exit %d, got %d: %s", errs.CodeConflict, res.ExitCode, res.Stderr)
@@ -88,7 +88,7 @@ func TestDataSourceNamesWriteTheDataSourceField(t *testing.T) {
 			e.org("3")
 			e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55})
 
-			res := e.run("monitoring", "item", "create", "--host", "7", "--name", "x",
+			res := e.run("monitoring", "item", "create", "--interval", "1", "--host", "7", "--name", "x",
 				"--data-source", spec, "--skip-test")
 			if res.ExitCode != 0 {
 				t.Fatalf("create failed: %s", res.Stderr)
@@ -114,7 +114,7 @@ func TestDataSourceAcceptsAnUnambiguousLegacyType(t *testing.T) {
 	stubActions(e)
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55})
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "x",
+	res := e.run("monitoring", "item", "create", "--interval", "1", "--host", "7", "--name", "x",
 		"--data-source", "api_data", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
@@ -132,7 +132,7 @@ func TestDataSourceAcceptsAnIdWithoutLookup(t *testing.T) {
 	e.org("3")
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55})
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU",
+	res := e.run("monitoring", "item", "create", "--interval", "1", "--host", "7", "--name", "CPU",
 		"--data-source", "4", "--skip-test")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
@@ -147,7 +147,7 @@ func TestDataSourceNamesTheCommandThatListsThem(t *testing.T) {
 	e.login()
 	stubActions(e)
 
-	res := e.run("monitoring", "item", "create", "--host", "7", "--name", "CPU",
+	res := e.run("monitoring", "item", "create", "--interval", "1", "--host", "7", "--name", "CPU",
 		"--data-source", "carrier-pigeon", "--skip-test")
 	if res.ExitCode != errs.CodeNotFound {
 		t.Fatalf("expected not-found exit %d, got %d: %s", errs.CodeNotFound, res.ExitCode, res.Stderr)
