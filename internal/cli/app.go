@@ -318,6 +318,11 @@ func str(m row, keys ...string) string {
 				return strconv.FormatInt(int64(t), 10)
 			}
 			return strconv.FormatFloat(t, 'f', -1, 64)
+		// Decoded JSON is float64; a body this CLI built itself holds ints.
+		case int:
+			return strconv.Itoa(t)
+		case int64:
+			return strconv.FormatInt(t, 10)
 		case bool:
 			return strconv.FormatBool(t)
 		case map[string]any:

@@ -358,3 +358,37 @@ func TestRowColumnsIncludeTheDocumentRoot(t *testing.T) {
 		t.Fatalf("want [\"$\"], got %v", cols)
 	}
 }
+
+// A schema names the field that tells its rows apart. Identifying rows by
+// anything else splits a device's history against every other item that
+// publishes into the same schema.
+func TestMappingCreateRefusesAnIdentifierThatIsNotTheSchemasOwn(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("GET", schemasPath+"8/", 200, map[string]any{
+		"id": 8, "name": "Power Supply",
+		"fields": []any{
+			map[string]any{"key": "psu_name", "of_type": "STRING", "is_identifier": true},
+			map[string]any{"key": "state", "of_type": "INTEGER", "is_identifier": false},
+		},
+	})
+	e.stub.handleMethod("POST", mappingsPath, 201, map[string]any{"id": 122})
+
+	res := e.run("monitoring", "item", "mapping", "create", "--item", "173", "--schema", "8",
+		"--field", "psu_name=item['$.1.2'].value", "--field", "state=item['$.1.3'].value",
+		"--identifier", "state", "--multi-valued", "--skip-test")
+	if res.ExitCode == 0 {
+		t.Fatal("an identifier that is not the schema's must be refused")
+	}
+	contains(t, res.Stderr, "psu_name")
+	if n := len(e.stub.requestsTo("POST", mappingsPath)); n != 0 {
+		t.Errorf("nothing should be created, got %d", n)
+	}
+
+	ok := e.run("monitoring", "item", "mapping", "create", "--item", "173", "--schema", "8",
+		"--field", "psu_name=item['$.1.2'].value", "--field", "state=item['$.1.3'].value",
+		"--identifier", "psu_name", "--multi-valued", "--skip-test")
+	if ok.ExitCode != 0 {
+		t.Fatalf("the schema's own identifier must be accepted: %s", ok.Stderr)
+	}
+}

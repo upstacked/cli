@@ -420,6 +420,13 @@ nothing - see 'ups monitoring item mapping'.`,
 				return nil
 			}
 			app.verifyCreatedItem(id)
+			if template != "" {
+				// The portal's mapping step offers JSON paths from the item's
+				// last test result, and a dry run writes none. Without one, the
+				// item opens in the web UI with nothing to map.
+				fmt.Fprintf(app.Stderr, "  %s to finish this item in the portal, record a sample first: ups monitoring item test %s\n",
+					t.Dim.Apply("note:"), id)
+			}
 			return nil
 		},
 	}

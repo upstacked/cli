@@ -484,7 +484,13 @@ ups monitoring item mapping update <mapping-id> --identifier if_name --multi-val
 
 `--field key=path` puts the schema key on the left and the JSON path on the
 right. Paths are evaluated after `response_root_path` has been applied, so
-write them relative to that root and not to the whole body.
+write them relative to that root and not to the whole body. A path may end in
+a Jinja-style filter, as the portal's own mappings do: `item['$.1.3.6…5.1.3'].value | int`.
+
+`--identifier` must be the key the **schema** marks as its identifier
+(`ups monitoring schema show <id>`), not merely one of the keys you mapped.
+Every item publishing into a schema identifies its rows the same way, and `ups`
+refuses anything else.
 
 `--multi-valued` is for a response carrying many rows, and it needs
 `--identifier`: the schema key whose value tells the rows apart. Without one every interface
@@ -553,6 +559,20 @@ because its module is in that template's set. Deleting a module deletes every
 item in it, including the copies applied to hosts (`module delete` names them). A module added to two templates
 carries its items into both — the point when the checks really are the same,
 and a surprise when they are not.
+
+### 6. Handing an item to the portal
+
+A person finishing an item in the web UI sees its response in the mapping step,
+and that list comes from the item's last **test** result. A dry run writes no
+such result, so an item built here opens with nothing to map until you run:
+
+```
+ups monitoring item test <item-id>
+```
+
+Two more fields the portal's wizard expects, both of which `ups` sets: the
+credential tag (`--credential-tag`) and the frequency (`--interval`). Without
+them the wizard cannot move past its first step.
 
 Apply to **one** host and dry-run there before rolling out. Then confirm the data
 arrived, with the labels people will see: `ups monitoring schema data <host-id>

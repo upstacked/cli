@@ -198,6 +198,9 @@ config that is structurally valid and collects nothing.`,
 				if err := checkIdentifier(identifier, fieldsFromBody(body)); err != nil {
 					return err
 				}
+				if err := app.checkSchemaIdentifier(str(row(body), "schema"), identifier); err != nil {
+					return err
+				}
 				body["identifier"] = identifier
 			}
 			if cmd.Flags().Changed("multi-valued") {
@@ -336,6 +339,9 @@ paths resolve to nothing.`,
 			}
 			if identifier != "" {
 				if err := checkIdentifier(identifier, mappingFields(after)); err != nil {
+					return err
+				}
+				if err := app.checkSchemaIdentifier(str(after, "schema"), identifier); err != nil {
 					return err
 				}
 			}
@@ -592,6 +598,29 @@ func rowColumns(multi bool, existing any, fields []row) []any {
 		}
 	}
 	return cols
+}
+
+// checkSchemaIdentifier refuses an identifier that is not the schema's own.
+//
+// A schema names the field that tells its rows apart, and the portal offers
+// only that one. Identifying rows by something else splits or merges a
+// device's history against what every other item publishing into the schema
+// did, which reads as working monitoring.
+func (a *App) checkSchemaIdentifier(schemaID, identifier string) error {
+	if schemaID == "" || identifier == "" {
+		return nil
+	}
+	m, _, err := a.getOne(schemasPath+schemaID+"/", nil)
+	if err != nil {
+		// Not the caller's problem to solve: the key check already passed.
+		return nil
+	}
+	want := identifierField(schemaFields(m))
+	if want == "" || want == identifier {
+		return nil
+	}
+	return errs.Usage("schema %s identifies rows by %q, not %q", schemaID, want, identifier).
+		WithHint("map that key and use it: --field %s=<path> --identifier %s", want, want)
 }
 
 // checkIdentifier refuses an identifier that is not one of the mapping's keys.
