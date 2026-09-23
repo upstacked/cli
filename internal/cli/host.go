@@ -20,6 +20,7 @@ They can be linked, but they have separate lifecycles.`,
 	}
 	c.AddCommand(
 		newHostListCmd(app), newHostShowCmd(app), newHostCreateCmd(app),
+		newHostUpdateCmd(app),
 		newHostDeleteCmd(app), newHostTraceCmd(app), newHostLinksCmd(app),
 		newHostWalkCmd(app),
 	)
@@ -80,6 +81,8 @@ func newHostShowCmd(app *App) *cobra.Command {
 				{"Hardware", dash(str(m, "i_hardware"))},
 				{"Serial", dash(str(m, "i_serial"))},
 				{"Asset", dash(str(m, "asset"))},
+				{"In monitoring", yesNo(m["in_monitoring"])},
+				{"Monitoring template", dash(str(m, "monitoring_template_name", "monitoring_template"))},
 			})
 		},
 	}
@@ -130,6 +133,71 @@ func newHostCreateCmd(app *App) *cobra.Command {
 	c.Flags().StringVar(&ip, "ip", "", "IP address")
 	c.Flags().StringVar(&mac, "mac", "", "MAC address")
 	c.Flags().StringVar(&infra, "infra-id", "", "infrastructure id (defaults to the active context)")
+	return c
+}
+
+func newHostUpdateCmd(app *App) *cobra.Command {
+	var name, hostname, ip, mac string
+	var monitoring bool
+
+	c := &cobra.Command{
+		Use:   "update <id>",
+		Short: "Change a device, or put it in and out of monitoring",
+		Long: `Change a device's details, or whether it is monitored at all.
+
+--monitoring is the switch the agent obeys: a host that is not in monitoring
+is left out of the payload the agent polls, so every item on it silently
+collects nothing. Building monitoring for a device ends here.
+
+--monitoring=false takes it back out, which stops every check on the host
+without deleting anything - and without alerting anyone.`,
+		Example: `  ups host update 205 --monitoring
+  ups host update 205 --ip 10.30.100.8 --hostname border.lab`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			body := map[string]any{}
+			addIf(body, "name", name)
+			addIf(body, "i_hostname", hostname)
+			addIf(body, "i_ip_address", ip)
+			addIf(body, "i_mac_address", mac)
+			if cmd.Flags().Changed("monitoring") {
+				body["in_monitoring"] = monitoring
+			}
+			if len(body) == 0 {
+				return errs.Usage("nothing to change").
+					WithHint("pass --monitoring, --name, --hostname, --ip or --mac")
+			}
+			if cmd.Flags().Changed("monitoring") && !monitoring {
+				m, _, err := app.getOne("/api/host/"+args[0]+"/", nil)
+				if err != nil {
+					return err
+				}
+				if err := app.Confirm(fmt.Sprintf(
+					"Take host %s (%s) out of monitoring? Every check on it stops, silently.",
+					args[0], dash(str(m, "name")))); err != nil {
+					return err
+				}
+			}
+			if err := app.mutate("PATCH", "/api/host/"+args[0]+"/", body, nil); err != nil {
+				return err
+			}
+			if app.DryRun {
+				return nil
+			}
+			t := app.Theme()
+			app.Printer.Infof("%s Updated host %s", app.Sym().OK, args[0])
+			if v, ok := body["in_monitoring"].(bool); ok && v {
+				fmt.Fprintf(app.Stderr, "  %s the agent picks its items up on their next interval: ups monitoring schema data %s <schema-id>\n",
+					t.Dim.Apply("next:"), args[0])
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&name, "name", "", "host name")
+	c.Flags().StringVar(&hostname, "hostname", "", "DNS hostname")
+	c.Flags().StringVar(&ip, "ip", "", "IP address")
+	c.Flags().StringVar(&mac, "mac", "", "MAC address")
+	c.Flags().BoolVar(&monitoring, "monitoring", false, "put the device in monitoring (--monitoring=false takes it out)")
 	return c
 }
 

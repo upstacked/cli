@@ -231,3 +231,29 @@ func TestItemUpdateResendsTheStoredCredentialTag(t *testing.T) {
 		t.Errorf("the stored tag must be resent: %v", got[0].Body)
 	}
 }
+
+// A host that is not in monitoring is left out of the payload the agent polls,
+// so every item on it silently collects nothing.
+func TestHostUpdateTurnsMonitoringOnAndConfirmsTurningItOff(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("GET", "/api/host/205/", 200, map[string]any{"id": 205, "name": "Border"})
+	e.stub.handleMethod("PATCH", "/api/host/205/", 200, map[string]any{"id": 205})
+
+	res := e.run("host", "update", "205", "--monitoring")
+	if res.ExitCode != 0 {
+		t.Fatalf("update failed: %s", res.Stderr)
+	}
+	got := e.stub.requestsTo("PATCH", "/api/host/205/")
+	if len(got) != 1 || got[0].Body["in_monitoring"] != true {
+		t.Fatalf("in_monitoring must be sent: %v", got)
+	}
+
+	off := e.runStdin("n\n", "host", "update", "205", "--monitoring=false")
+	if off.ExitCode == 0 {
+		t.Error("taking a host out of monitoring must confirm first")
+	}
+	if n := len(e.stub.requestsTo("PATCH", "/api/host/205/")); n != 1 {
+		t.Errorf("declining must not send a change, got %d", n)
+	}
+}

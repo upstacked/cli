@@ -578,6 +578,21 @@ Two more fields the portal's wizard expects, both of which `ups` sets: the
 credential tag (`--credential-tag`) and the frequency (`--interval`). Without
 them the wizard cannot move past its first step.
 
+### 7. Put the device in monitoring
+
+```
+ups host update <host-id> --monitoring
+```
+
+This is the switch the agent obeys. A host that is not in monitoring is left
+out of the payload the agent polls, so every item on it fetches nothing and
+nothing says so - the same silent gap as a missing schema mapping. Check it
+with `ups host show <id>` ("In monitoring"), and finish here rather than
+assuming an applied template is enough.
+
+`--monitoring=false` takes it back out and stops every check on the host, so
+it confirms first.
+
 Apply to **one** host and dry-run there before rolling out. Then confirm the data
 arrived, with the labels people will see: `ups monitoring schema data <host-id>
 <schema-id>` shows the newest row per identifier, value mappings applied. No rows
