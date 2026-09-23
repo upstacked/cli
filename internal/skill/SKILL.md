@@ -555,7 +555,11 @@ ups monitoring template apply <template-id> --host <one-host-id>
 ```
 
 A module is the group; a template holds modules; an item reaches a template
-because its module is in that template's set. Deleting a module deletes every
+because its module is in that template's set. Group as the people who maintain
+this do: one template per device type, and one module per data source crossed
+with a natural grouping - SNMP interfaces, SNMP environmentals (CPU, memory,
+temperature, power), ICMP availability. Ask before inventing a different split;
+existing names on the organization show the convention in use. Deleting a module deletes every
 item in it, including the copies applied to hosts (`module delete` names them). A module added to two templates
 carries its items into both — the point when the checks really are the same,
 and a surprise when they are not.
