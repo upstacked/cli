@@ -555,14 +555,21 @@ ups monitoring template apply <template-id> --host <one-host-id>
 ```
 
 A module is the group; a template holds modules; an item reaches a template
-because its module is in that template's set. Group as the people who maintain
-this do: one template per device type, and one module per data source crossed
-with a natural grouping - SNMP interfaces, SNMP environmentals (CPU, memory,
-temperature, power), ICMP availability. Ask before inventing a different split;
-existing names on the organization show the convention in use. Deleting a module deletes every
-item in it, including the copies applied to hosts (`module delete` names them). A module added to two templates
-carries its items into both — the point when the checks really are the same,
-and a surprise when they are not.
+because its module is in that template's set. Deleting a module deletes every
+item in it, including the copies applied to hosts (`module delete` names them).
+A module added to two templates carries its items into both — the point when
+the checks really are the same, and a surprise when they are not.
+
+Group as the people who maintain this do: one template per device type, and one
+module per data source crossed with a natural grouping — SNMP interfaces, SNMP
+environmentals (CPU, memory, temperature, power), ICMP availability. Existing
+names on the organization show the convention in use; ask before inventing a
+different split.
+
+Apply to **one** host before rolling out. A template item has no device to
+poll, so nothing has checked it until it lands on one; applying it to fifty
+hosts first produces fifty unverified checks, and per the coverage rule, no
+alert about any of them.
 
 ### 6. Handing an item to the portal
 
@@ -593,13 +600,10 @@ assuming an applied template is enough.
 `--monitoring=false` takes it back out and stops every check on the host, so
 it confirms first.
 
-Apply to **one** host and dry-run there before rolling out. Then confirm the data
-arrived, with the labels people will see: `ups monitoring schema data <host-id>
-<schema-id>` shows the newest row per identifier, value mappings applied. No rows
-after two polling intervals means nothing reached the portal. A template item has
-no device to poll, so nothing has checked it until it lands on one. Applying it
-to fifty hosts first produces fifty unverified checks, and per the coverage
-rule, no alert about any of them.
+Then confirm the data arrived, with the labels people will see:
+`ups monitoring schema data <host-id> <schema-id>` shows the newest row per
+identifier, value mappings applied. No rows after two polling intervals means
+nothing reached the portal, and that is the only proof the whole build worked.
 
 ## Diff before apply, always
 
