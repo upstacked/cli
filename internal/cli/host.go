@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/upstacked/cli/internal/errs"
@@ -251,22 +252,195 @@ func newHostTraceCmd(app *App) *cobra.Command {
 }
 
 func newHostLinksCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:   "links",
+		Short: "Manage topology links between hosts",
+		Long: `Topology links are the edges of the map: which port on one host reaches
+which port on another.
+
+Links are versioned by the infrastructure's topology revision. The server
+stamps the current revision onto a link as it is created, and the portal's
+topology view only draws links matching that revision - so a link created
+against an older revision exists but is invisible.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error { return runHostLinksList(app) },
+	}
+	c.AddCommand(newHostLinksListCmd(app), newHostLinksCreateCmd(app), newHostLinksDeleteCmd(app))
+	return c
+}
+
+func newHostLinksListCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
 		Short: "List topology links between hosts",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, args []string) error { return runHostLinksList(app) },
+	}
+}
+
+func runHostLinksList(app *App) error {
+	return app.runList(listOpts{
+		Path:    "/api/host_link/",
+		Query:   app.infraQuery(nil),
+		Columns: []string{"ID", "NAME", "FROM", "FROM PORT", "TO", "TO PORT", "LAYER", "REV"},
+		Empty:   "No host links recorded.",
+		Cells: func(m row) []string {
+			return []string{
+				str(m, "id"), dash(str(m, "name")),
+				dash(str(m, "source_node")), dash(str(m, "source_port_name")),
+				dash(str(m, "destination_node")), dash(str(m, "destination_port_name")),
+				linkLayers(m), dash(str(m, "revison_number")),
+			}
+		},
+	})
+}
+
+// linkLayers renders the three layer booleans as the compact "L1,L2" form the
+// portal uses. A link can sit on more than one layer at once.
+func linkLayers(m row) string {
+	var on []string
+	for i, key := range []string{"layer_one", "layer_two", "layer_three"} {
+		if b, ok := m[key].(bool); ok && b {
+			on = append(on, fmt.Sprintf("L%d", i+1))
+		}
+	}
+	return dash(strings.Join(on, ","))
+}
+
+func newHostLinksCreateCmd(app *App) *cobra.Command {
+	var from, to, fromPort, toPort, name, layers, infra string
+	c := &cobra.Command{
+		Use:   "create",
+		Short: "Record a topology link between two hosts",
+		Long: `Record a topology link between two hosts.
+
+--from and --to are host ids, not names: the same hostname exists in many
+customers' infrastructures, and resolving one here would be a way to draw an
+edge on the wrong customer's map.
+
+The link's name defaults to the source port, which is what the portal labels
+the edge with.`,
+		Example: `  ups host links create --from 12 --to 19 --from-port Gi1/0/1 --to-port Gi1/0/24
+  ups host links create --from 12 --to 19 --name uplink --layer 1,2`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.runList(listOpts{
-				Path:    "/api/host_link/",
-				Query:   app.infraQuery(nil),
-				Columns: []string{"ID", "FROM", "TO", "TYPE"},
-				Empty:   "No host links recorded.",
-				Cells: func(m row) []string {
-					return []string{
-						str(m, "id"), dash(str(m, "host_a", "from_host", "source")),
-						dash(str(m, "host_b", "to_host", "target")), dash(str(m, "link_type", "type")),
-					}
-				},
-			})
+			if from == "" || to == "" {
+				return errs.Usage("--from and --to are required")
+			}
+			if from == to {
+				return errs.Usage("--from and --to are the same host (%s)", from)
+			}
+			if name == "" {
+				name = fromPort
+			}
+			if name == "" {
+				return errs.Usage("--name is required when --from-port is not given")
+			}
+			target := infra
+			if target == "" {
+				var err error
+				if target, err = app.Resolved.RequireInfra(); err != nil {
+					return err
+				}
+			}
+			body := map[string]any{
+				"name":             name,
+				"infrastructure":   atoiOr(target),
+				"source_node":      atoiOr(from),
+				"destination_node": atoiOr(to),
+			}
+			addIf(body, "source_port_name", fromPort)
+			addIf(body, "destination_port_name", toPort)
+			l, err := parseLinkLayers(layers)
+			if err != nil {
+				return err
+			}
+			for k, v := range l {
+				body[k] = v
+			}
+
+			var raw jsonRaw
+			// revison_number is deliberately not sent: the server stamps the
+			// infrastructure's current topology revision, and a link carrying
+			// any other value is invisible on the map.
+			if err := app.create("/api/host_link/", body, &raw); err != nil {
+				return err
+			}
+			if app.DryRun {
+				return nil
+			}
+			var m row
+			_ = jsonUnmarshal(raw, &m)
+			t, sym := app.Theme(), app.Sym()
+			fmt.Fprintf(app.Stderr, "%s Linked host %s to host %s (link %s)\n",
+				t.Green.Apply(sym.OK), from, to, str(m, "id"))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&from, "from", "", "source host id (required)")
+	c.Flags().StringVar(&to, "to", "", "destination host id (required)")
+	c.Flags().StringVar(&fromPort, "from-port", "", "port name on the source host")
+	c.Flags().StringVar(&toPort, "to-port", "", "port name on the destination host")
+	c.Flags().StringVar(&name, "name", "", "link label (defaults to --from-port)")
+	c.Flags().StringVar(&layers, "layer", "1", "OSI layers this link carries: 1, 2, 3, or a comma-separated list")
+	c.Flags().StringVar(&infra, "infra-id", "", "infrastructure id (defaults to the active context)")
+	return c
+}
+
+// parseLinkLayers turns --layer into the three booleans the API stores. The
+// API has no validation here, so a typo would otherwise create a link on no
+// layer at all, which draws nothing and looks like the create silently failed.
+func parseLinkLayers(s string) (map[string]any, error) {
+	out := map[string]any{"layer_one": false, "layer_two": false, "layer_three": false}
+	names := map[string]string{"1": "layer_one", "2": "layer_two", "3": "layer_three"}
+	matched := false
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(part)), "l"))
+		if part == "" {
+			continue
+		}
+		key, ok := names[part]
+		if !ok {
+			return nil, errs.Usage("--layer accepts 1, 2 or 3, got %q", part)
+		}
+		out[key] = true
+		matched = true
+	}
+	if !matched {
+		return nil, errs.Usage("--layer needs at least one of 1, 2 or 3")
+	}
+	return out, nil
+}
+
+func newHostLinksDeleteCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <id>...",
+		Short: "Remove topology links",
+		Long: `Remove topology links.
+
+This removes edges from the map. It does not touch the hosts themselves or
+their monitoring.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			what := fmt.Sprintf("Delete host link %s?", args[0])
+			if len(args) > 1 {
+				what = fmt.Sprintf("Delete %d host links (%s)?", len(args), strings.Join(args, ", "))
+			}
+			if err := app.Confirm(what); err != nil {
+				return err
+			}
+			ids := make([]any, 0, len(args))
+			for _, a := range args {
+				ids = append(ids, atoiOr(a))
+			}
+			if err := app.mutate("DELETE", "/api/host_link_bulk_delete/",
+				map[string]any{"ids": ids}, nil); err != nil {
+				return err
+			}
+			if !app.DryRun {
+				app.Printer.Infof("Deleted %d host link(s).", len(args))
+			}
+			return nil
 		},
 	}
 }

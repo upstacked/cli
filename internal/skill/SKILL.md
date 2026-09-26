@@ -729,6 +729,40 @@ you can read.
 
 There is no log-based device discovery. Discovery is topology scanning — see `ups discovery`.
 
+## Topology links
+
+A link is an edge on the map: a port on one host reaching a port on another.
+
+```sh
+ups host links                                      # list them
+ups host links create --from 12 --to 19 \
+    --from-port Gi1/0/1 --to-port Gi1/0/24          # record one
+ups host links delete 55 --yes                      # remove one
+```
+
+**`ups discovery` does not create links.** It scans, and what it finds has to be
+recorded separately — today that means one `host links create` per edge, from the
+neighbour table you read off the device. Discovering a topology and then finding
+nothing on the map is the expected behaviour, not a failure.
+
+**`--from` and `--to` are host ids, never names.** The same hostname lives in many
+customers' infrastructures; resolving one here would be a way to draw an edge on the
+wrong customer's map. Get the ids from `ups host list` first.
+
+**Links are versioned, and the version is not yours to set.** Each infrastructure has a
+topology revision, the server stamps the current one onto a link as it is created, and
+the portal draws only links matching it. This is why `ups` never sends a revision — a
+link carrying any other value is stored, returned by the API, and invisible on the map,
+which reads as a create that silently did nothing.
+
+`--layer` says which OSI layers the link carries (`1`, or `2,3`; default `1`). The API
+validates none of it, so `ups` rejects anything else rather than storing a link that
+sits on no layer and therefore draws nowhere.
+
+The link's name is what labels the edge, and it defaults to `--from-port`. With no port
+and no `--name` there is nothing sensible to fall back on, so the command asks for one
+instead of letting the API answer 400.
+
 ## Names that look alike but are not
 
 | Looks similar | Actually |
