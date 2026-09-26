@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/upstacked/cli/internal/errs"
+	"github.com/upstacked/cli/internal/output"
 )
 
 func newDiscoveryCmd(app *App) *cobra.Command {
@@ -86,19 +87,86 @@ hosts you then promote into real ones.`,
 				return nil
 			},
 		},
-		&cobra.Command{
-			Use:   "topology",
-			Short: "Show the discovered topology",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				_, raw, err := app.getOne("/api/topology/get/", app.infraQuery(nil))
-				if err != nil {
-					return err
-				}
-				return app.Printer.Object(raw, nil)
-			},
-		},
+		newDiscoveryTopologyCmd(app),
 	)
 	return c
+}
+
+// newDiscoveryTopologyCmd shows the links a discovery run recorded.
+//
+// The endpoint scopes by "hostgroups", not "infrastructure". It is the only
+// one in the API that spells it that way, and it answers a wrong parameter
+// with 200 and the bare string "Wrong input" rather than a 400 - so getting
+// this wrong reads as a malformed response rather than a bad request.
+func newDiscoveryTopologyCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "topology",
+		Short: "Show the discovered topology",
+		Long: `Show the topology links recorded for this infrastructure.
+
+Discovery creates these itself: the agent reads each device's LLDP/CDP
+neighbour table over SSH and posts the links it can resolve. What shows up
+here is that result, not a fresh scan.
+
+Unlike "ups host links", each link carries the status the platform last
+observed for it.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			infra, err := app.Resolved.RequireInfra()
+			if err != nil {
+				return err
+			}
+			q := url.Values{}
+			q.Set("hostgroups", infra)
+
+			_, raw, err := app.getOne("/api/topology/get/", q)
+			if err != nil {
+				return err
+			}
+			if app.AsJSON {
+				return app.Printer.Object(raw, nil)
+			}
+
+			var body struct {
+				Nodes []row `json:"topology_nodes"`
+				Links []row `json:"topology_links"`
+			}
+			if err := jsonUnmarshal(raw, &body); err != nil {
+				return err
+			}
+			name := map[string]string{}
+			for _, n := range body.Nodes {
+				name[str(n, "id")] = str(n, "name")
+			}
+			// topology_nodes carries only hosts that are in monitoring, while
+			// the links reference every host. A link to a host that is not
+			// monitored therefore has no name here, and is shown as "#<id>"
+			// so it cannot be mistaken for one.
+			node := func(id string) string {
+				if n, ok := name[id]; ok && n != "" {
+					return n
+				}
+				if id == "" {
+					return "-"
+				}
+				return "#" + id
+			}
+
+			t := &output.Table{
+				Columns: []string{"ID", "NAME", "FROM", "FROM PORT", "TO", "TO PORT", "STATUS"},
+				Empty: "No topology links recorded. Discovery only finds links over SSH, " +
+					"so an infrastructure with no device credentials records none.",
+			}
+			for _, l := range body.Links {
+				t.Add(str(l, "id"), nil,
+					str(l, "id"), dash(str(l, "name")),
+					node(str(l, "source_node")), dash(str(l, "source_port_name")),
+					node(str(l, "destination_node")), dash(str(l, "destination_port_name")),
+					dash(str(l, "link_status")))
+			}
+			return app.Printer.Print(t)
+		},
+	}
 }
 
 func newTicketCmd(app *App) *cobra.Command {

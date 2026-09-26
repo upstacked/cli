@@ -735,15 +735,26 @@ A link is an edge on the map: a port on one host reaching a port on another.
 
 ```sh
 ups host links                                      # list them
+ups discovery topology                              # same links, plus link status
 ups host links create --from 12 --to 19 \
     --from-port Gi1/0/1 --to-port Gi1/0/24          # record one
 ups host links delete 55 --yes                      # remove one
 ```
 
-**`ups discovery` does not create links.** It scans, and what it finds has to be
-recorded separately — today that means one `host links create` per edge, from the
-neighbour table you read off the device. Discovering a topology and then finding
-nothing on the map is the expected behaviour, not a failure.
+**Discovery creates links on its own, and it needs SSH to do it.** The agent reads
+each device's LLDP/CDP neighbour table by logging in and running the per-OS command
+(`show lldp neighbors detail` and friends), then posts the links it can resolve. It is
+not an SNMP step: with no **device** credential on the infrastructure the login fails,
+the neighbour table comes back empty, and discovery completes having created no links
+at all — quietly, because finding none is indistinguishable from a network with none.
+A discovery run that found hosts but drew no map is the first thing to check
+credentials over.
+
+**A neighbour is matched to a host by exact name.** The agent compares the announced
+neighbour name against host names with plain string equality, so `core-sw-01.corp`
+does not match a host called `core-sw-01`, and the link is dropped without a record
+that anything went unmatched. Links you expected and did not get are usually this.
+Creating them by hand with `host links create` is the workaround.
 
 **`--from` and `--to` are host ids, never names.** The same hostname lives in many
 customers' infrastructures; resolving one here would be a way to draw an edge on the
