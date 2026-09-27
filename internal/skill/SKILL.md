@@ -487,6 +487,14 @@ right. Paths are evaluated after `response_root_path` has been applied, so
 write them relative to that root and not to the whole body. A path may end in
 a Jinja-style filter, as the portal's own mappings do: `item['$.1.3.6…5.1.3'].value | int`.
 
+A path may also read the clock: `now()` is the current time as a UTC datetime,
+`| as_datetime` reads a device-reported timestamp (ISO 8601 or epoch seconds,
+as a number or a string), `| duration` renders seconds or a timedelta as
+`5d 3h`, and `| duration_since` does the whole of "how long ago was this" in one
+filter. Prefer computing a duration at **display** time (next section): a path
+runs at poll time, so a duration it computes is frozen at the moment of the
+poll and goes stale until the next one.
+
 `--identifier` must be the key the **schema** marks as its identifier
 (`ups monitoring schema show <id>`), not merely one of the keys you mapped.
 Every item publishing into a schema identifies its rows the same way, and `ups`
@@ -533,6 +541,30 @@ equality (compared as text, any case), `range:LOW-HIGH=`, `gte:N=`, `lte:N=` for
 whole numbers, and `default=` for everything else. A label may use
 `{{ value }}`, as in `default={{ value // 1000000 }} Mbps`. Colours are green,
 red, yellow, orange and blue. A value no rule matches shows as sent.
+
+A label may also read the clock, which is how a stored **timestamp** is shown as
+a duration — last reboot as uptime, last config change or last seen as
+staleness:
+
+```
+ups monitoring value-mapping create --name "Time since reboot" \
+  --rule "default={{ value | duration_since }}"
+```
+
+`duration_since` is `now()` minus the value, formatted as its two largest
+non-zero units (`5d 3h`, `7m`, `0s`); a timestamp in the future keeps its sign,
+so a device whose clock has drifted reads as `-2h 10m` instead of as plausible
+uptime. The same `now()`, `| as_datetime`, `| duration` and `| duration_since`
+are available here as in a field path, and this is the right place for them:
+a label renders on every page load, so the duration is recomputed each time
+somebody looks, while the stored data and any alert rule still see the raw
+timestamp.
+
+A label whose expression cannot be evaluated shows as `JINJA_ERROR: …` in the
+cell rather than falling back to the raw value — so a mapping that seems to do
+nothing at all is usually not attached: `--value-mapping <field>=<name>` on the
+item's mapping is what binds it, and applying a template copies the rules onto
+the host's items.
 
 Value mappings change only what people see — stored data and alert rules read
 the raw value, so an alert rule on status still compares against `2`, not
