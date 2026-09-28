@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -389,4 +391,82 @@ func TestMonitoringItemShowsConfigStatus(t *testing.T) {
 	}
 	contains(t, res.Stdout, "Config status")
 	contains(t, res.Stdout, "INCOMPLETE")
+}
+
+// failedSchemaMapping is the shape a clock primitive the server does not know
+// produces: every stage ran, nothing mapped, and the reason is per field.
+func failedSchemaMapping() row {
+	rec := dryRunRecord("failed", nil)
+	rec["trace"].(map[string]any)["schema_mapping_status"] = map[string]any{
+		"status": "failed", "success": 0, "total": 1,
+		"details": map[string]any{
+			"results": []any{},
+			"errors": []any{map[string]any{
+				"schema": "Availability and Latency", "field": "uptime",
+				"expr": "now()", "message": "'now' is undefined",
+			}},
+		},
+	}
+	rec["data_points"] = []any{}
+	return rec
+}
+
+func stubFailedRun(e *env, id string) {
+	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": id, "status": "pending"})
+	e.stub.handleMethod("GET", dryRunsPath+id+"/", 200, failedSchemaMapping())
+}
+
+// A caller reading --json gets the record, not a table: the reason a stage
+// failed is in the output of the command that failed, not three commands away.
+func TestDryRunAsJSONEmitsTheRecordWithItsStageErrors(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	stubFailedRun(e, "18")
+
+	res := e.run("monitoring", "item", "dry-run", "412", "--json")
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(res.Stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON a caller can parse: %v\n%s", err, res.Stdout)
+	}
+	contains(t, res.Stdout, "'now' is undefined")
+	if strings.Contains(res.Stdout, "Stages") {
+		t.Error("the human table reached stdout alongside the JSON document")
+	}
+}
+
+// The same has to hold for a command that dry-runs as a side effect, which is
+// where a table on stdout is least expected.
+func TestMappingUpdateAsJSONReportsTheVerificationAsJSON(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	stubMapping(e)
+	stubFailedRun(e, "18")
+
+	res := e.run("monitoring", "item", "mapping", "update", "88",
+		"--field", "uptime=now()", "--json")
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(res.Stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON a caller can parse: %v\n%s", err, res.Stdout)
+	}
+	contains(t, res.Stdout, "'now' is undefined")
+}
+
+// --wait 0 returns as soon as the run is queued. In JSON mode that record is
+// still the whole point of the call, so it must be emitted.
+func TestDryRunQueuedAsJSONStillEmitsTheRecord(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 19, "status": "pending"})
+
+	res := e.run("monitoring", "item", "dry-run", "412", "--json", "--wait", "0")
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(res.Stdout), &got); err != nil {
+		t.Fatalf("a queued run printed no document: %v\n%s", err, res.Stdout)
+	}
+	if got["id"] == nil {
+		t.Errorf("the queued run's id is what a later show needs: %v", got)
+	}
 }

@@ -493,10 +493,10 @@ func (a *App) patchItem(id string, body map[string]any) error {
 func (a *App) verifyCreatedItem(id string) {
 	t, sym := a.Theme(), a.Sym()
 
-	m, _, err := a.dryRunItem(id, "", "", dryRunWait)
+	m, raw, err := a.dryRunItem(id, "", "", dryRunWait)
 	switch {
 	case err == nil:
-		if rerr := a.reportDryRun(m); rerr != nil {
+		if rerr := a.reportDryRun(m, raw); rerr != nil {
 			// The hint distinguishes a config that collects nothing from a run
 			// that never happened; a blanket "delete it" would be wrong advice
 			// for the second.

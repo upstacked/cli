@@ -126,6 +126,26 @@ Host mapping is the one that misleads. On a failure `ups` prints `candidate_iden
 what each candidate in the response actually rendered to — next to the identifier
 expression and the value it was matched against. That is usually the whole answer.
 
+Schema mapping prints the same kind of answer, and it is easy to miss because the summary
+line above it looks complete on its own. Under `0/1 mapped` there is **one line per field
+that did not resolve**, naming the field, the expression as written, and what went wrong:
+
+```
+  schema mapping  failed    0/1 mapped
+      Availability and Latency.uptime  now(): 'now' is undefined
+```
+
+`'now' is undefined` and `No filter named 'duration_since'` mean the server evaluating the
+expression does not have that primitive, which is a different problem from a path that
+found nothing — no amount of rewriting the path fixes it. Read those lines before changing
+anything; they are in the output of the command that failed, so there is no need to go
+looking for them with `dry-run show`.
+
+With `--json`, every command that dry-runs — `item dry-run`, and `item create` and
+`item mapping update` when they verify — writes the whole run record to stdout and nothing
+else, so the same errors are at `.trace.schema_mapping_status.details.errors` and the
+human tables never contaminate the document.
+
 **Only `api_data`, `snmpstd` and `icmp` have mapping stages to preview.** Meraki, DNAC,
 Viptela, Webex, Cybervision and the legacy `snmp` worker are refused with a message saying
 so. For those, `ups monitoring item test` is the check that still applies.

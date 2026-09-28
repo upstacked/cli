@@ -89,10 +89,7 @@ it again - queue a new one.`,
 			if m == nil {
 				return nil // --dry-run printed the request instead of sending it
 			}
-			if app.AsJSON {
-				return app.Printer.Object(raw, nil)
-			}
-			if wait <= 0 {
+			if wait <= 0 && !app.AsJSON {
 				// The server answers the POST with status "pending" too, so
 				// only the call site knows whether nobody waited or whether the
 				// agent is late. Those need different advice.
@@ -103,7 +100,7 @@ it again - queue a new one.`,
 					t.Dim.Apply("read it later:"), dash(str(m, "id")))
 				return nil
 			}
-			return app.reportDryRun(m)
+			return app.reportDryRun(m, raw)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "run against this host (defaults to the item's test host, then its host)")
@@ -130,10 +127,7 @@ it is read. To try again, queue a new run.`,
 			if err != nil {
 				return err
 			}
-			if app.AsJSON {
-				return app.Printer.Object(raw, nil)
-			}
-			return app.reportDryRun(m)
+			return app.reportDryRun(m, raw)
 		},
 	}
 }
@@ -286,8 +280,19 @@ func mentionsDataSource(msg string) bool {
 
 // reportDryRun prints the trace and the data points, and fails the command when
 // the configuration would not have collected anything, so a script notices.
-func (a *App) reportDryRun(m row) error {
+func (a *App) reportDryRun(m row, raw jsonRaw) error {
 	t, sym := a.Theme(), a.Sym()
+
+	// A caller reading JSON gets the record itself, errors and all, rather than
+	// tables it cannot parse. It is emitted here because several outcomes below
+	// return early, and each of them is one a caller has to be able to read.
+	// Every line written after this goes to stderr, so stdout carries nothing
+	// but the document.
+	if a.AsJSON && raw != nil {
+		if err := a.Printer.Object(raw, nil); err != nil {
+			return err
+		}
+	}
 	runID := dash(str(m, "id"))
 	status := str(m, "status")
 	trace := objField(m, "trace")
@@ -338,9 +343,11 @@ func (a *App) reportDryRun(m row) error {
 		fmt.Fprintf(a.Stderr, "  %s %s\n", t.Dim.Apply("agent reported:"), e)
 	}
 
-	a.printDryRunTrace(trace)
-	a.printDryRunPoints(points)
-	a.printDryRunAlerts(listField(m, "alerts"))
+	if !a.AsJSON {
+		a.printDryRunTrace(trace)
+		a.printDryRunPoints(points)
+		a.printDryRunAlerts(listField(m, "alerts"))
+	}
 	a.warnDryRunTruncation(trace)
 
 	// The command fails on the outcome the whole feature exists to catch: a
