@@ -90,7 +90,7 @@ func newHostShowCmd(app *App) *cobra.Command {
 }
 
 func newHostCreateCmd(app *App) *cobra.Command {
-	var name, hostname, ip, mac, infra, controller string
+	var name, hostname, ip, mac, infra, controller, serial, assetType string
 	var controllerAttrs []string
 	c := &cobra.Command{
 		Use:   "create",
@@ -98,8 +98,8 @@ func newHostCreateCmd(app *App) *cobra.Command {
 		Example: `  ups host create --name core-sw-01 --ip 10.0.0.1
   ups host create --name fw-01 --hostname fw01.corp --infra 42`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if name == "" {
-				return errs.Usage("--name is required")
+			if err := requireHostFields(name, assetType, serial, ip); err != nil {
+				return err
 			}
 			target := infra
 			if target == "" {
@@ -112,6 +112,8 @@ func newHostCreateCmd(app *App) *cobra.Command {
 			addIf(body, "i_hostname", hostname)
 			addIf(body, "i_ip_address", ip)
 			addIf(body, "i_mac_address", mac)
+			addIf(body, "i_serial", serial)
+			body["asset_type"] = atoiOr(assetType)
 			if err := addControllerSolution(body, cmd, controller, controllerAttrs); err != nil {
 				return err
 			}
@@ -138,6 +140,8 @@ func newHostCreateCmd(app *App) *cobra.Command {
 	c.Flags().StringVar(&ip, "ip", "", "IP address")
 	c.Flags().StringVar(&mac, "mac", "", "MAC address")
 	c.Flags().StringVar(&infra, "infra-id", "", "infrastructure id (defaults to the active context)")
+	c.Flags().StringVar(&serial, "serial", "", "serial number (required)")
+	c.Flags().StringVar(&assetType, "asset-type", "", "asset type id (required), from: ups asset type list")
 	addControllerSolutionFlags(c, &controller, &controllerAttrs)
 	return c
 }
@@ -518,4 +522,35 @@ func addControllerSolution(body map[string]any, c *cobra.Command, controller str
 	body["controller_solution_attributes"] = parsed
 
 	return nil
+}
+
+// requireHostFields refuses a device that is missing what the rest of the
+// platform needs from it: an asset type and a serial to identify the equipment,
+// an address to reach it at.
+//
+// FIXME: This belongs in the API, not here. The portal and IaC write hosts
+// through the same endpoints and are not held to any of it, so the same
+// incomplete device still gets in by another door. Tracked in the API's issue
+// tracker as upstacked/upstacked#3593; delete this once the serializer
+// enforces it.
+func requireHostFields(name, assetType, serial, ip string) error {
+	var missing []string
+	for _, f := range []struct{ flag, value string }{
+		{"--name", name},
+		{"--asset-type", assetType},
+		{"--serial", serial},
+		{"--ip", ip},
+	} {
+		if strings.TrimSpace(f.value) == "" {
+			missing = append(missing, f.flag)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	// Named together: finding out one flag at a time costs a round trip each.
+	return errs.Usage("missing required %s", strings.Join(missing, ", ")).
+		WithHint("a device without these cannot be identified or reached. " +
+			"Asset types: ups asset type list")
 }

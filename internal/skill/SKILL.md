@@ -652,17 +652,50 @@ assuming an applied template is enough.
 `--monitoring=false` takes it back out and stops every check on the host, so
 it confirms first.
 
-**A device reached through a controller needs its controller linkage**, or no
-item can address it. An SD-WAN device (Viptela and anything modelled the same
-way) is polled through its controller, and the item's URL names the device by
-an attribute of the host:
+### Adding a device
+
+Decide first how the device is reached, because it changes what the host must
+carry.
+
+**Standalone**, polled directly, which is most SNMP devices:
 
 ```
-ups host create --name SE02-RO02 \
+ups host create --name sw-01 --asset-type 3 --serial FOC2145Z0AB --ip 10.30.100.8
+```
+
+`--name`, `--asset-type`, `--serial` and `--ip` are required: a device without
+them cannot be identified as equipment or reached. `ups asset type list` gives
+the asset type ids.
+
+**Reached through a controller** — SD-WAN, and anything modelled the same way.
+The device is polled through its controller, and an item names it by an
+attribute the host carries. Check what the solution expects before creating the
+host:
+
+```
+ups controller-solution list           # is the solution already declared?
+ups controller-solution show 6         # which attributes must a host carry?
+```
+
+If it is not declared yet, read the vendor's monitoring API documentation and
+declare the fields its calls take to identify one device. Guessing them produces
+hosts that template to nothing:
+
+```
+ups controller-solution create --name "Cisco SD-WAN" \
+  --required-attr controllerIp="vManage address" \
+  --required-attr systemIp="device system IP" \
+  --attr siteId="site the device belongs to"
+```
+
+Then the host carries its own values for them:
+
+```
+ups host create --name SE02-RO02 --asset-type 3 --serial FGL2716MMVF --ip 10.255.46.22 \
   --controller-solution 6 \
+  --controller-attr controllerIp=vmanage-718536.viptela.net \
   --controller-attr systemIp=10.255.46.22 \
-  --controller-attr siteId=10461203 \
-  --controller-attr deviceId=10.255.46.22
+  --controller-attr siteId=10461203
 
 # the item then templates them, once, for every host in the fabric
 --parameters '{"url":"https://{{host.controller_solution_attributes.controllerIp}}/dataservice/device/interface?deviceId={{host.controller_solution_attributes.systemIp}}"}'

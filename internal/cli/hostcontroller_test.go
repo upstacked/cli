@@ -12,6 +12,7 @@ func TestHostCreateSendsTheControllerSolution(t *testing.T) {
 	e.stub.handleMethod("POST", "/api/host/", 201, map[string]any{"id": 300, "name": "SE02-RO02"})
 
 	res := e.run("host", "create", "--name", "SE02-RO02",
+		"--asset-type", "3", "--serial", "FGL2716MMVG", "--ip", "10.255.46.22",
 		"--controller-solution", "6",
 		"--controller-attr", "systemIp=10.255.46.22",
 		"--controller-attr", "siteId=10461203")
@@ -89,5 +90,47 @@ func TestControllerAttrAloneIsAChange(t *testing.T) {
 	res := e.run("host", "update", "242", "--controller-attr", "deviceId=10.255.46.21")
 	if res.ExitCode != 0 {
 		t.Fatalf("refused a real change: %s", res.Stderr)
+	}
+}
+
+// A device missing what identifies or reaches it is refused before anything is
+// written, and every missing flag is named at once: finding them one at a time
+// costs a round trip each.
+func TestHostCreateNamesEveryMissingRequiredFlag(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("8")
+
+	res := e.run("host", "create", "--name", "SE02-RO03")
+
+	if res.ExitCode == 0 {
+		t.Fatal("an incomplete device must not be created")
+	}
+	for _, flag := range []string{"--asset-type", "--serial", "--ip"} {
+		contains(t, res.Stderr, flag)
+	}
+	if got := e.stub.requestsTo("POST", "/api/host/"); len(got) != 0 {
+		t.Error("nothing should have been written")
+	}
+}
+
+func TestHostCreateSendsTheAssetTypeAsAnId(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.setInfra("8")
+	e.stub.handleMethod("POST", "/api/host/", 201, map[string]any{"id": 301})
+
+	res := e.run("host", "create", "--name", "SE02-RO04",
+		"--asset-type", "3", "--serial", "FGL2716MMVH", "--ip", "10.255.46.24")
+	if res.ExitCode != 0 {
+		t.Fatalf("create failed: %s", res.Stderr)
+	}
+
+	got := e.stub.requestsTo("POST", "/api/host/")
+	if got[0].Body["asset_type"] != float64(3) {
+		t.Errorf("asset_type not sent as an id: %v", got[0].Body["asset_type"])
+	}
+	if got[0].Body["i_serial"] != "FGL2716MMVH" {
+		t.Errorf("serial not sent: %v", got[0].Body)
 	}
 }

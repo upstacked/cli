@@ -166,7 +166,8 @@ func TestDryRunPerformsNoWrite(t *testing.T) {
 	e.login()
 	e.setInfra("42")
 
-	res := e.run("--dry-run", "host", "create", "--name", "new-sw")
+	res := e.run("--dry-run", "host", "create", "--name", "new-sw",
+		"--asset-type", "3", "--serial", "FGL2716MMVF", "--ip", "10.0.0.9")
 	if res.ExitCode != 0 {
 		t.Fatalf("dry run failed: %s", res.Stderr)
 	}
