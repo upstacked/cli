@@ -152,6 +152,9 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		// possible to create one for a while, and they polled nothing.
 		{"a data source is required", "polls nothing"},
 		{"get and walk are not interchangeable", "not interchangeable"},
+		// An exporter that matches no host silently removes its traffic from
+		// every answer, and nothing in the answer looks wrong.
+		{"unmatched flow exporters make answers short", "The answer still looks complete"},
 	}
 	for _, r := range required {
 		if !strings.Contains(skill.Content, r.phrase) {

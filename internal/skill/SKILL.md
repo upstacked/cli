@@ -885,6 +885,46 @@ The link's name is what labels the edge, and it defaults to `--from-port`. With 
 and no `--name` there is nothing sensible to fall back on, so the command asks for one
 instead of letting the API answer 400.
 
+## Flow on the topology
+
+Flow records (NetFlow, IPFIX, sFlow) name the device that exported them and the interfaces
+the traffic entered and left on. Matched to topology links, that gives the traffic on each
+link and the path each conversation takes.
+
+```sh
+ups flow links                                        # traffic per link, both directions
+ups flow conversations                                # busiest conversations and their paths
+ups flow conversations --through core-sw-01,ot-sw-01  # only traffic passing through both
+ups flow conversations --query 10.20.0.45 --window 1h # by IP, port or service name
+ups flow conversations --id-only                      # conversation ids
+ups flow conversation '10.10.2.57|52.114.7.20|443|tcp'  # one conversation, hop by hop
+```
+
+**An exporter is matched to a host by its management IP.** A device that sends flow from
+any other address (a loopback, an uplink) matches no host, and its records drop out of
+every link and every path. The answer still looks complete. The server lists those
+exporters and `ups` prints them on stderr, even with `--json`. When you see that warning,
+the fix is on the device: set its flow export source to the address the host has in
+`ups host list`. Do not report a short answer as the whole picture while it is showing.
+
+**A missing link is not an idle link.** `flow links` leaves out links no exporter reported
+on, and a device that exports nothing contributes nothing. When both ends of a link export,
+each direction uses the larger reading, not the sum, so the same traffic is not counted
+twice.
+
+**A device in brackets on a path exported nothing.** Its place is inferred from a
+neighbour's interface. The traffic went through it, but it has no reading of its own.
+
+A conversation is client, server, server port and transport, with both directions merged;
+the client's ephemeral port is dropped, so one session is one row. The server is the side
+with the well-known port, which is a guess for UDP between two high ports. `ASYMMETRIC`
+means the reply took a different path; `flow conversation` then shows both.
+
+`--through` takes exactly two hosts, as names or ids, resolved within the active
+infrastructure. `--window` is `5m`, `15m` (default) or `1h`. `--limit` caps how many
+conversations the server returns, busiest first, so an absent conversation may only be
+below the cut: raise `--limit` or narrow with `--query` before concluding it did not happen.
+
 ## Names that look alike but are not
 
 | Looks similar | Actually |
