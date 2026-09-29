@@ -90,7 +90,8 @@ func newHostShowCmd(app *App) *cobra.Command {
 }
 
 func newHostCreateCmd(app *App) *cobra.Command {
-	var name, hostname, ip, mac, infra string
+	var name, hostname, ip, mac, infra, controller string
+	var controllerAttrs []string
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Add a device",
@@ -111,6 +112,9 @@ func newHostCreateCmd(app *App) *cobra.Command {
 			addIf(body, "i_hostname", hostname)
 			addIf(body, "i_ip_address", ip)
 			addIf(body, "i_mac_address", mac)
+			if err := addControllerSolution(body, cmd, controller, controllerAttrs); err != nil {
+				return err
+			}
 
 			var raw jsonRaw
 			if err := app.create("/api/host/", body, &raw); err != nil {
@@ -134,11 +138,13 @@ func newHostCreateCmd(app *App) *cobra.Command {
 	c.Flags().StringVar(&ip, "ip", "", "IP address")
 	c.Flags().StringVar(&mac, "mac", "", "MAC address")
 	c.Flags().StringVar(&infra, "infra-id", "", "infrastructure id (defaults to the active context)")
+	addControllerSolutionFlags(c, &controller, &controllerAttrs)
 	return c
 }
 
 func newHostUpdateCmd(app *App) *cobra.Command {
-	var name, hostname, ip, mac string
+	var name, hostname, ip, mac, controller string
+	var controllerAttrs []string
 	var monitoring bool
 
 	c := &cobra.Command{
@@ -164,9 +170,13 @@ without deleting anything - and without alerting anyone.`,
 			if cmd.Flags().Changed("monitoring") {
 				body["in_monitoring"] = monitoring
 			}
+			if err := addControllerSolution(body, cmd, controller, controllerAttrs); err != nil {
+				return err
+			}
 			if len(body) == 0 {
 				return errs.Usage("nothing to change").
-					WithHint("pass --monitoring, --name, --hostname, --ip or --mac")
+					WithHint("pass --monitoring, --name, --hostname, --ip, --mac, " +
+						"--controller-solution or --controller-attr")
 			}
 			if cmd.Flags().Changed("monitoring") && !monitoring {
 				m, _, err := app.getOne("/api/host/"+args[0]+"/", nil)
@@ -199,6 +209,7 @@ without deleting anything - and without alerting anyone.`,
 	c.Flags().StringVar(&ip, "ip", "", "IP address")
 	c.Flags().StringVar(&mac, "mac", "", "MAC address")
 	c.Flags().BoolVar(&monitoring, "monitoring", false, "put the device in monitoring (--monitoring=false takes it out)")
+	addControllerSolutionFlags(c, &controller, &controllerAttrs)
 	return c
 }
 
@@ -460,3 +471,51 @@ func atoiOr(s string) any {
 }
 
 var _ = url.Values{}
+
+// addControllerSolutionFlags exposes the SD-WAN controller linkage on a host.
+//
+// A host reached through a controller (Viptela vManage, and anything else
+// modelled the same way) carries the controller it belongs to and the
+// attributes that identify it there: its system IP, site id, device id. Items
+// address such a device by templating those attributes into the request URL, so
+// a host without them cannot use a controller template at all -- and until this
+// existed they could only be set in the portal, which left every device added
+// from here stuck with hand-written per-device URLs.
+func addControllerSolutionFlags(c *cobra.Command, controller *string, attrs *[]string) {
+	c.Flags().StringVar(controller, "controller-solution", "",
+		"id of the controller solution this device is reached through")
+	c.Flags().StringArrayVar(attrs, "controller-attr", nil,
+		"controller attribute as key=value, repeatable (e.g. --controller-attr systemIp=10.255.46.21)")
+}
+
+// addControllerSolution puts the two controller fields on a request body.
+//
+// The attributes are sent whole, because the API stores them as one object: a
+// partial write would drop the keys left out. `update` therefore takes the
+// attributes it is given as the complete set, which is why the flag help says
+// what it says.
+func addControllerSolution(body map[string]any, c *cobra.Command, controller string, attrs []string) error {
+	if c.Flags().Changed("controller-solution") {
+		id := atoiOr(controller)
+		if id == 0 {
+			return errs.Usage("--controller-solution takes the controller's id, not %q", controller)
+		}
+		body["controller_solution"] = id
+	}
+
+	if len(attrs) == 0 {
+		return nil
+	}
+
+	parsed := map[string]any{}
+	for _, attr := range attrs {
+		key, value, ok := strings.Cut(attr, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return errs.Usage("--controller-attr takes key=value, got %q", attr)
+		}
+		parsed[strings.TrimSpace(key)] = value
+	}
+	body["controller_solution_attributes"] = parsed
+
+	return nil
+}

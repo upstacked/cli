@@ -78,15 +78,17 @@ func (a *App) exportInfra(infraID string) (*iac.Document, error) {
 			used[tpl] = true
 		}
 		doc.Hosts = append(doc.Hosts, iac.Host{
-			ID:         id,
-			Name:       str(m, "name"),
-			Hostname:   str(m, "i_hostname"),
-			IP:         str(m, "i_ip_address"),
-			MAC:        str(m, "i_mac_address"),
-			Type:       str(m, "i_type"),
-			Serial:     str(m, "i_serial"),
-			Template:   tpl,
-			Monitoring: byHost[id],
+			ID:              id,
+			Name:            str(m, "name"),
+			Hostname:        str(m, "i_hostname"),
+			IP:              str(m, "i_ip_address"),
+			MAC:             str(m, "i_mac_address"),
+			Type:            str(m, "i_type"),
+			Serial:          str(m, "i_serial"),
+			Template:        tpl,
+			Monitoring:      byHost[id],
+			Controller:      str(m, "controller_solution"),
+			ControllerAttrs: stringMap(objField(m, "controller_solution_attributes")),
 		})
 	}
 
@@ -626,6 +628,21 @@ func copyBody(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in)+1)
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+// stringMap flattens a JSON object into the string map the document carries.
+// Controller attributes are identifiers -- a system IP, a site id, a UUID --
+// and a document that wrote one as a number would apply back as a different
+// value than the one exported.
+func stringMap(o row) map[string]string {
+	if len(o) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(o))
+	for k, v := range o {
+		out[k] = plain(v)
 	}
 	return out
 }

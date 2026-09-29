@@ -72,6 +72,12 @@ type Host struct {
 	// value means "not managed here", never "unassign".
 	Template   string           `yaml:"template,omitempty"`
 	Monitoring []MonitoringItem `yaml:"monitoring,omitempty"`
+	// Controller is the SD-WAN controller this device is reached through, and
+	// ControllerAttrs the attributes that identify it there. An item addresses
+	// such a device by templating those attributes into its URL, so a document
+	// that leaves them out produces a host no controller template can poll.
+	Controller      string            `yaml:"controller,omitempty"`
+	ControllerAttrs map[string]string `yaml:"controller_attributes,omitempty"`
 }
 
 // MonitoringItem is one check bound to a host.

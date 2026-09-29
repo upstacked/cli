@@ -652,6 +652,32 @@ assuming an applied template is enough.
 `--monitoring=false` takes it back out and stops every check on the host, so
 it confirms first.
 
+**A device reached through a controller needs its controller linkage**, or no
+item can address it. An SD-WAN device (Viptela and anything modelled the same
+way) is polled through its controller, and the item's URL names the device by
+an attribute of the host:
+
+```
+ups host create --name SE02-RO02 \
+  --controller-solution 6 \
+  --controller-attr systemIp=10.255.46.22 \
+  --controller-attr siteId=10461203 \
+  --controller-attr deviceId=10.255.46.22
+
+# the item then templates them, once, for every host in the fabric
+--parameters '{"url":"https://{{host.controller_solution_attributes.controllerIp}}/dataservice/device/interface?deviceId={{host.controller_solution_attributes.systemIp}}"}'
+```
+
+`--controller-attr` is repeatable and **replaces the whole attribute object**,
+because that is how the API stores it: passing one key on an update drops the
+rest. Send every attribute the device needs each time. `ups export` carries both
+as `controller` and `controller_attributes`, so a fabric round-trips through
+IaC.
+
+Without these, `{{host.*}}` has nothing to resolve to and the poll fails with
+the expression used as a hostname. A whole fabric was once built with 41
+hand-written per-device URLs for want of this.
+
 Then confirm the data arrived, with the labels people will see:
 `ups monitoring schema data <host-id> <schema-id>` shows the newest row per
 identifier, value mappings applied. No rows after two polling intervals means

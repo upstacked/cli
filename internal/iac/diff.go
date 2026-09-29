@@ -379,7 +379,25 @@ func hostFieldDiff(local, remote *Host) []string {
 	cmp("mac", local.MAC, remote.MAC)
 	cmp("type", local.Type, remote.Type)
 	cmp("serial", local.Serial, remote.Serial)
+	cmp("controller", local.Controller, remote.Controller)
+	if len(local.ControllerAttrs) > 0 && !sameAttrs(local.ControllerAttrs, remote.ControllerAttrs) {
+		changed = append(changed, "controller_attributes")
+	}
 	return changed
+}
+
+// sameAttrs compares the controller attributes as a whole, because that is how
+// the API stores them: one changed key rewrites the object.
+func sameAttrs(local, remote map[string]string) bool {
+	if len(local) != len(remote) {
+		return false
+	}
+	for k, v := range local {
+		if remote[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func itemFieldDiff(local, remote *MonitoringItem) []string {
@@ -411,6 +429,14 @@ func hostBody(h *Host) map[string]any {
 	put(b, "i_mac_address", h.MAC)
 	put(b, "i_type", h.Type)
 	put(b, "i_serial", h.Serial)
+	putRef(b, "controller_solution", h.Controller)
+	if len(h.ControllerAttrs) > 0 {
+		attrs := map[string]any{}
+		for k, v := range h.ControllerAttrs {
+			attrs[k] = v
+		}
+		b["controller_solution_attributes"] = attrs
+	}
 	return b
 }
 
