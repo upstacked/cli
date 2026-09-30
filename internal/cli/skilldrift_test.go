@@ -155,6 +155,8 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		// An exporter that matches no host silently removes its traffic from
 		// every answer, and nothing in the answer looks wrong.
 		{"unmatched flow exporters make answers short", "The answer still looks complete"},
+		{"flow hides monitoring traffic by default", "Monitoring traffic is left out by default"},
+		{"a short flow path has a stated cause", "A path that stops short is not traffic that went nowhere"},
 	}
 	for _, r := range required {
 		if !strings.Contains(skill.Content, r.phrase) {

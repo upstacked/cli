@@ -15,6 +15,7 @@ import (
 const (
 	flowLinksPath         = "/api/topology/flow/"
 	flowConversationsPath = "/api/topology/flow/conversations/"
+	flowSummaryPath       = "/api/flow/summary/"
 )
 
 func newFlowCmd(app *App) *cobra.Command {
@@ -32,16 +33,27 @@ An exporter is matched to a host by its management IP. A device that sends
 flow from any other address (a loopback, an uplink) matches no host, its
 records drop out of every link and every path, and the answer comes back
 short with nothing in it looking wrong. The server lists those exporters and
-ups warns about them on stderr.`,
+ups warns about them on stderr.
+
+Monitoring traffic (SNMP polls and traps, syslog, flow export, ICMP) is left
+out by default: it is the monitoring watching itself, and on a busy network
+it crowds out everything else. --include-monitoring brings it back.`,
 	}
-	c.AddCommand(newFlowConversationsCmd(app), newFlowConversationCmd(app), newFlowLinksCmd(app))
+	c.AddCommand(newFlowSummaryCmd(app), newFlowConversationsCmd(app),
+		newFlowConversationCmd(app), newFlowLinksCmd(app))
 	return c
 }
 
 type flowQuery struct {
-	window  string
-	through []string
-	query   string
+	window            string
+	start             string
+	end               string
+	through           []string
+	seenBy            string
+	query             string
+	service           string
+	host              string
+	includeMonitoring bool
 }
 
 func (a *App) flowQueryValues(f flowQuery) (url.Values, error) {
@@ -51,8 +63,13 @@ func (a *App) flowQueryValues(f flowQuery) (url.Values, error) {
 	}
 	q := url.Values{}
 	q.Set("hostgroups", infra)
-	if f.window != "" {
-		q.Set("window", f.window)
+	// The server ignores the window next to an explicit range; sending the
+	// default anyway would make the request read as if both applied.
+	if f.start != "" || f.end != "" {
+		setIf(q, "start", f.start)
+		setIf(q, "end", f.end)
+	} else {
+		setIf(q, "window", f.window)
 	}
 	if len(f.through) > 0 {
 		if len(f.through) != 2 {
@@ -69,10 +86,26 @@ func (a *App) flowQueryValues(f flowQuery) (url.Values, error) {
 		}
 		q.Set("through", strings.Join(ids, ","))
 	}
-	if f.query != "" {
-		q.Set("q", f.query)
+	if f.seenBy != "" {
+		id, err := a.flowHostID(infra, strings.TrimSpace(f.seenBy))
+		if err != nil {
+			return nil, err
+		}
+		q.Set("seen_by", id)
+	}
+	setIf(q, "q", f.query)
+	setIf(q, "service", f.service)
+	setIf(q, "host", f.host)
+	if f.includeMonitoring {
+		q.Set("include_monitoring", "true")
 	}
 	return q, nil
+}
+
+func setIf(q url.Values, key, value string) {
+	if value != "" {
+		q.Set(key, value)
+	}
 }
 
 // flowHostID takes an id as given and resolves anything else as a name,
@@ -110,23 +143,55 @@ func hostLabel(names map[string]string, id string) string {
 }
 
 type flowResponse struct {
-	Window             string    `json:"window"`
-	Links              []jsonRaw `json:"links"`
-	Conversations      []jsonRaw `json:"conversations"`
-	UnmatchedExporters []string  `json:"unmatched_exporters"`
+	Window             string              `json:"window"`
+	Links              []jsonRaw           `json:"links"`
+	Conversations      []jsonRaw           `json:"conversations"`
+	Names              map[string]flowName `json:"names"`
+	UnmatchedExporters []string            `json:"unmatched_exporters"`
+}
+
+// flowName is what the server knows an IP as: a host or IPAM name, or for a
+// public address the organisation that owns it.
+type flowName struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	HostID any    `json:"host_id"`
+	Org    string `json:"org"`
+}
+
+// ipLabel keeps the IP visible next to any name: a name is a hint, and the
+// address is what the caller can act on or search for.
+func ipLabel(names map[string]flowName, ip string) string {
+	n := names[ip]
+	switch {
+	case ip == "":
+		return "-"
+	case n.Name != "":
+		return fmt.Sprintf("%s (%s)", n.Name, ip)
+	case n.Org != "":
+		return fmt.Sprintf("%s · %s", n.Org, ip)
+	}
+	return ip
 }
 
 func (a *App) getFlow(path string, q url.Values) (flowResponse, jsonRaw, error) {
 	var body flowResponse
+	raw, err := a.getFlowInto(path, q, &body)
+	if err == nil {
+		a.warnUnmatchedExporters(body.UnmatchedExporters)
+	}
+	return body, raw, err
+}
+
+func (a *App) getFlowInto(path string, q url.Values, body any) (jsonRaw, error) {
 	_, raw, err := a.getOne(path, q)
 	if err != nil {
-		return body, nil, err
+		return nil, err
 	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return body, raw, errs.General("unexpected response from %s", path).Wrapping(err)
+	if err := json.Unmarshal(raw, body); err != nil {
+		return raw, errs.General("unexpected response from %s", path).Wrapping(err)
 	}
-	a.warnUnmatchedExporters(body.UnmatchedExporters)
-	return body, raw, nil
+	return raw, nil
 }
 
 // warnUnmatchedExporters goes to stderr even with --json: an answer missing
@@ -141,7 +206,14 @@ func (a *App) warnUnmatchedExporters(ips []string) {
 }
 
 func formatBps(v float64) string {
-	units := []string{"bps", "kbps", "Mbps", "Gbps", "Tbps"}
+	return scaled(v, []string{"bps", "kbps", "Mbps", "Gbps", "Tbps"})
+}
+
+func formatBytes(v float64) string {
+	return scaled(v, []string{"B", "kB", "MB", "GB", "TB"})
+}
+
+func scaled(v float64, units []string) string {
 	u := 0
 	for v >= 1000 && u < len(units)-1 {
 		v /= 1000
@@ -186,9 +258,43 @@ func pathSummary(names map[string]string, path []row) string {
 	return dash(strings.Join(parts, " > "))
 }
 
-func conversationLabel(m row) string {
-	return fmt.Sprintf("%s → %s:%s/%s", str(m, "client"), str(m, "server"),
-		str(m, "service_port"), str(m, "transport"))
+func conversationLabel(names map[string]flowName, m row) string {
+	return fmt.Sprintf("%s → %s:%s/%s", ipLabel(names, str(m, "client")),
+		ipLabel(names, str(m, "server")), str(m, "service_port"), str(m, "transport"))
+}
+
+// gapReasons say why a direction's path stops short, and what fixes it. The
+// path itself only shows where it stops; without the reason the natural
+// conclusion is that the traffic went nowhere else.
+var gapReasons = map[string]struct{ what, fix string }{
+	"exporter_unmatched": {
+		"flow from %[2]s matched no host",
+		"set the device's flow export source to its management IP",
+	},
+	"no_interface_table": {
+		"%[1]s has no interface table, so its ports are unknown",
+		"store its ifName/ifDescr (ups host walk <id> ifName ifDescr) as its interface table",
+	},
+	"unknown_interface": {
+		"%[1]s's interface table has no ifIndex %[3]s",
+		"refresh its interface table; the device has added or renumbered interfaces",
+	},
+}
+
+func gapLines(names map[string]string, gaps []row) []string {
+	out := make([]string, 0, len(gaps))
+	for _, g := range gaps {
+		reason := str(g, "reason")
+		r, ok := gapReasons[reason]
+		if !ok {
+			out = append(out, reason)
+			continue
+		}
+		host := hostLabel(names, str(g, "host"))
+		out = append(out, fmt.Sprintf(r.what, host, dash(str(g, "ip")), dash(str(g, "if_index")))+
+			" - "+strings.ReplaceAll(r.fix, "<id>", dash(str(g, "host"))))
+	}
+	return out
 }
 
 func newFlowConversationsCmd(app *App) *cobra.Command {
@@ -204,11 +310,16 @@ directions merged; the client's ephemeral port is dropped so one session is
 one row. PATH lists the devices on the request path. A device in brackets
 exports no flow: its place is inferred from its neighbour's interface.
 
---through keeps conversations whose path passes through both hosts. --query
-matches an IP, a port or a service name.`,
+--through keeps conversations whose path passes through both hosts. --seen-by
+keeps what one device exported. --query matches an IP, a port or a service
+name; --service and --host match one exactly.
+
+Monitoring traffic is left out unless --include-monitoring is given.`,
 		Example: `  ups flow conversations
   ups flow conversations --window 1h --limit 20
   ups flow conversations --through core-sw-01,ot-sw-01
+  ups flow conversations --seen-by core-sw-01 --service 'https (TCP/443)'
+  ups flow conversations --start 2026-09-30T11:00:00Z --end 2026-09-30T11:30:00Z
   ups flow conversations --query 10.20.0.45 --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -237,7 +348,7 @@ matches an IP, a port or a service name.`,
 					asym = "yes"
 				}
 				t.Add(str(m, "id"), body.Conversations[i],
-					conversationLabel(m), dash(str(m, "service_name")),
+					conversationLabel(body.Names, m), dash(str(m, "service_name")),
 					bps(m, "request_bps"), bps(m, "response_bps"),
 					pathSummary(names, hops(m, "request_path")), asym)
 			}
@@ -245,8 +356,8 @@ matches an IP, a port or a service name.`,
 		},
 	}
 	addFlowFlags(c, &f)
+	addFlowFilterFlags(c, &f)
 	c.Flags().StringSliceVar(&f.through, "through", nil, "only conversations passing through both hosts (two names or ids)")
-	c.Flags().StringVar(&f.query, "query", "", "match an IP, port or service name")
 	return c
 }
 
@@ -262,7 +373,8 @@ form client|server|port|transport. Quote it: | is a shell pipe.
 
 When the response path differs from the request path (ECMP, asymmetric
 routing), both are shown; otherwise the response path is the request path
-reversed.`,
+reversed. When a path stops short, the reason is listed under it with what
+fixes it.`,
 		Example: `  ups flow conversation '10.10.2.57|52.114.7.20|443|tcp'`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -288,7 +400,7 @@ reversed.`,
 				return errs.General("unexpected conversation in response").Wrapping(err)
 			}
 			if err := app.Printer.Object(raw, [][2]string{
-				{"Conversation", conversationLabel(m)},
+				{"Conversation", conversationLabel(body.Names, m)},
 				{"Service", dash(str(m, "service_name"))},
 				{"Request", bps(m, "request_bps")},
 				{"Response", bps(m, "response_bps")},
@@ -297,13 +409,16 @@ reversed.`,
 				return err
 			}
 			names := app.hostNames(q.Get("hostgroups"))
-			for _, p := range []struct{ title, key string }{
-				{"Request path", "request_path"},
-				{"Response path", "response_path"},
+			for _, p := range []struct{ title, key, gaps string }{
+				{"Request path", "request_path", "request_gaps"},
+				{"Response path", "response_path", "response_gaps"},
 			} {
 				app.Printer.Printf("\n%s", p.title)
 				if err := app.Printer.Print(hopTable(names, hops(m, p.key))); err != nil {
 					return err
+				}
+				for _, line := range gapLines(names, hops(m, p.gaps)) {
+					app.Printer.Printf("  gap: %s", line)
 				}
 			}
 			return nil
@@ -339,9 +454,13 @@ func newFlowLinksCmd(app *App) *cobra.Command {
 
 Links no exporter reported on are left out, so a link missing here carried
 no traffic that anyone exported - not necessarily no traffic. When both ends
-export, each direction uses the larger reading rather than the sum.`,
+export, each direction uses the larger reading rather than the sum.
+
+Monitoring traffic is left out unless --include-monitoring is given, so a
+link's figure here can be lower than its interface counters.`,
 		Example: `  ups flow links
-  ups flow links --window 1h --json`,
+  ups flow links --window 1h --json
+  ups flow links --include-monitoring`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			q, err := app.flowQueryValues(f)
@@ -379,11 +498,128 @@ export, each direction uses the larger reading rather than the sum.`,
 		},
 	}
 	addFlowFlags(c, &f)
+	addMonitoringFlag(c, &f)
 	return c
 }
 
-// The server validates --window; checking it here too would only drift from
-// the set it accepts.
+type flowSummary struct {
+	Range struct {
+		Start    string `json:"start"`
+		End      string `json:"end"`
+		Interval string `json:"interval"`
+	} `json:"range"`
+	Totals struct {
+		Bytes                 float64 `json:"bytes"`
+		Packets               float64 `json:"packets"`
+		HiddenMonitoringBytes float64 `json:"hidden_monitoring_bytes"`
+	} `json:"totals"`
+	Services           []row               `json:"services"`
+	Hosts              []row               `json:"hosts"`
+	Names              map[string]flowName `json:"names"`
+	UnmatchedExporters []string            `json:"unmatched_exporters"`
+}
+
+func newFlowSummaryCmd(app *App) *cobra.Command {
+	f := flowQuery{window: "1h"}
+	c := &cobra.Command{
+		Use:   "summary",
+		Short: "Show total traffic and the top services and hosts",
+		Long: `Show an infrastructure's flow traffic: the totals, the busiest services and
+the busiest hosts, with the names the server knows them by.
+
+Monitoring traffic is left out unless --include-monitoring is given; the
+amount left out is shown, so a small total is not mistaken for a quiet
+network.`,
+		Example: `  ups flow summary
+  ups flow summary --window 24h
+  ups flow summary --seen-by core-sw-01 --include-monitoring
+  ups flow summary --host 10.30.100.15 --json`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			q, err := app.flowQueryValues(f)
+			if err != nil {
+				return err
+			}
+			var body flowSummary
+			raw, err := app.getFlowInto(flowSummaryPath, q, &body)
+			if err != nil {
+				return err
+			}
+			app.warnUnmatchedExporters(body.UnmatchedExporters)
+			if app.AsJSON {
+				return app.Printer.Object(raw, nil)
+			}
+			monitoring := "shown"
+			if !f.includeMonitoring {
+				monitoring = formatBytes(body.Totals.HiddenMonitoringBytes) + " left out"
+			}
+			if err := app.Printer.Object(raw, [][2]string{
+				{"Range", fmt.Sprintf("%s - %s", dash(body.Range.Start), dash(body.Range.End))},
+				{"Traffic", formatBytes(body.Totals.Bytes)},
+				{"Packets", strconv.FormatFloat(body.Totals.Packets, 'f', 0, 64)},
+				{"Monitoring", monitoring},
+			}); err != nil {
+				return err
+			}
+			services := &output.Table{
+				Columns: []string{"SERVICE", "BYTES", "PACKETS"},
+				Empty:   "No traffic in the range.",
+			}
+			for _, s := range body.Services {
+				services.Add(str(s, "service"), nil, dash(str(s, "service")),
+					formatBytes(num(s, "bytes")), dash(str(s, "packets")))
+			}
+			hosts := &output.Table{
+				Columns: []string{"HOST", "ROLE", "BYTES", "PACKETS"},
+				Empty:   "No traffic in the range.",
+			}
+			for _, h := range body.Hosts {
+				hosts.Add(str(h, "ip"), nil, ipLabel(body.Names, str(h, "ip")),
+					dash(str(h, "role")), formatBytes(num(h, "bytes")), dash(str(h, "packets")))
+			}
+			for _, t := range []struct {
+				title string
+				table *output.Table
+			}{{"Top services", services}, {"Top hosts", hosts}} {
+				app.Printer.Printf("\n%s", t.title)
+				if err := app.Printer.Print(t.table); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	addFlowFlags(c, &f)
+	addFlowFilterFlags(c, &f)
+	return c
+}
+
+func num(m row, key string) float64 {
+	v, _ := m[key].(float64)
+	return v
+}
+
+// The server validates --window and the range; checking them here too would
+// only drift from what it accepts.
 func addFlowFlags(c *cobra.Command, f *flowQuery) {
-	c.Flags().StringVar(&f.window, "window", "15m", "time window: 5m, 15m or 1h")
+	window := f.window
+	if window == "" {
+		window = "15m"
+	}
+	c.Flags().StringVar(&f.window, "window", window, "time window, e.g. 15m, 1h, 6h or 24h")
+}
+
+func addMonitoringFlag(c *cobra.Command, f *flowQuery) {
+	c.Flags().BoolVar(&f.includeMonitoring, "include-monitoring", false,
+		"include SNMP, traps, syslog, flow export and ICMP (left out by default)")
+}
+
+func addFlowFilterFlags(c *cobra.Command, f *flowQuery) {
+	addMonitoringFlag(c, f)
+	c.Flags().StringVar(&f.start, "start", "", "start of an explicit range (RFC 3339), instead of --window")
+	c.Flags().StringVar(&f.end, "end", "", "end of an explicit range (RFC 3339), instead of --window")
+	c.Flags().StringVar(&f.seenBy, "seen-by", "", "only what this host exported (name or id)")
+	c.Flags().StringVar(&f.query, "query", "", "match an IP, port or service name")
+	c.Flags().StringVar(&f.service, "service", "", "exactly this service, e.g. 'https (TCP/443)'")
+	c.Flags().StringVar(&f.host, "host", "", "only conversations with this IP as client or server")
 }

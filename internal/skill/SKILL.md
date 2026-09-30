@@ -892,13 +892,25 @@ the traffic entered and left on. Matched to topology links, that gives the traff
 link and the path each conversation takes.
 
 ```sh
+ups flow summary                                      # totals, top services, top hosts
 ups flow links                                        # traffic per link, both directions
 ups flow conversations                                # busiest conversations and their paths
 ups flow conversations --through core-sw-01,ot-sw-01  # only traffic passing through both
+ups flow conversations --seen-by core-sw-01           # only what one device exported
 ups flow conversations --query 10.20.0.45 --window 1h # by IP, port or service name
+ups flow conversations --service 'https (TCP/443)' --host 10.30.100.15
+ups flow conversations --start 2026-09-30T11:00:00Z --end 2026-09-30T11:30:00Z
 ups flow conversations --id-only                      # conversation ids
 ups flow conversation '10.10.2.57|52.114.7.20|443|tcp'  # one conversation, hop by hop
 ```
+
+**Monitoring traffic is left out by default.** SNMP polls and traps, syslog, flow export
+and ICMP are the monitoring watching itself, and on a busy network they fill the top of
+every list. `flow summary`, `flow links` and `flow conversations` leave them out unless
+`--include-monitoring` is given. A figure from them can therefore be lower than an
+interface counter, and a question about SNMP or ping traffic needs the flag, or it comes
+back empty. `flow summary` says how much it left out. `flow conversation <id>` is never
+filtered.
 
 **An exporter is matched to a host by its management IP.** A device that sends flow from
 any other address (a loopback, an uplink) matches no host, and its records drop out of
@@ -915,13 +927,24 @@ twice.
 **A device in brackets on a path exported nothing.** Its place is inferred from a
 neighbour's interface. The traffic went through it, but it has no reading of its own.
 
+**A path that stops short is not traffic that went nowhere.** `flow conversation` lists
+each gap under the path with its fix: an exporter that matched no host, a device with no
+interface table (its ports are unknown until its `ifName`/`ifDescr` are stored), or an
+interface the table does not know. Report the gap alongside the path, not the path alone.
+
+IPs carry the name the server knows them by: a host or IPAM name, or for a public
+address the organisation that owns it (`Fusion (10.30.100.9)`,
+`Example Networks · 91.217.206.59`). The organisation comes from an ASN database that can
+be out of date; the IP is the fact.
+
 A conversation is client, server, server port and transport, with both directions merged;
 the client's ephemeral port is dropped, so one session is one row. The server is the side
 with the well-known port, which is a guess for UDP between two high ports. `ASYMMETRIC`
 means the reply took a different path; `flow conversation` then shows both.
 
-`--through` takes exactly two hosts, as names or ids, resolved within the active
-infrastructure. `--window` is `5m`, `15m` (default) or `1h`. `--limit` caps how many
+`--through` takes exactly two hosts and `--seen-by` one, as names or ids, resolved within
+the active infrastructure. `--window` defaults to `15m` (`1h` for `flow summary`); the
+server says which windows it accepts. `--start`/`--end` give an explicit range instead. `--limit` caps how many
 conversations the server returns, busiest first, so an absent conversation may only be
 below the cut: raise `--limit` or narrow with `--query` before concluding it did not happen.
 
