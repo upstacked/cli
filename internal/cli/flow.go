@@ -16,6 +16,8 @@ const (
 	flowLinksPath         = "/api/topology/flow/"
 	flowConversationsPath = "/api/topology/flow/conversations/"
 	flowSummaryPath       = "/api/flow/summary/"
+	flowPlacesPath        = "/api/flow/places/"
+	flowViewsPath         = "/api/flow/views/"
 )
 
 func newFlowCmd(app *App) *cobra.Command {
@@ -37,10 +39,15 @@ ups warns about them on stderr.
 
 Monitoring traffic (SNMP polls and traps, syslog, flow export, ICMP) is left
 out by default: it is the monitoring watching itself, and on a busy network
-it crowds out everything else. --include-monitoring brings it back.`,
+it crowds out everything else. --include-monitoring brings it back.
+
+--between narrows to traffic between two places (a location, subnet, device,
+address range or the internet). A search worth keeping can be saved as a view
+and opened again with --view.`,
 	}
 	c.AddCommand(newFlowSummaryCmd(app), newFlowConversationsCmd(app),
-		newFlowConversationCmd(app), newFlowLinksCmd(app))
+		newFlowConversationCmd(app), newFlowLinksCmd(app),
+		newFlowPlacesCmd(app), newFlowViewCmd(app))
 	return c
 }
 
@@ -53,6 +60,8 @@ type flowQuery struct {
 	query             string
 	service           string
 	host              string
+	between           []string
+	view              string
 	includeMonitoring bool
 }
 
@@ -96,6 +105,17 @@ func (a *App) flowQueryValues(f flowQuery) (url.Values, error) {
 	setIf(q, "q", f.query)
 	setIf(q, "service", f.service)
 	setIf(q, "host", f.host)
+	if len(f.between) > 2 {
+		return nil, errs.Usage("--between takes one or two places, got %d", len(f.between)).
+			WithHint("ups flow summary --between 'NO00 - Oslo',internet")
+	}
+	for i, spec := range f.between {
+		place, err := a.resolvePlace(infra, strings.TrimSpace(spec))
+		if err != nil {
+			return nil, err
+		}
+		q.Set([]string{"a", "b"}[i], place)
+	}
 	if f.includeMonitoring {
 		q.Set("include_monitoring", "true")
 	}
@@ -312,7 +332,8 @@ exports no flow: its place is inferred from its neighbour's interface.
 
 --through keeps conversations whose path passes through both hosts. --seen-by
 keeps what one device exported. --query matches an IP, a port or a service
-name; --service and --host match one exactly.
+name; --service and --host match one exactly. --between keeps conversations
+between two places, or with one place, to or from it.
 
 Monitoring traffic is left out unless --include-monitoring is given.`,
 		Example: `  ups flow conversations
@@ -320,9 +341,14 @@ Monitoring traffic is left out unless --include-monitoring is given.`,
   ups flow conversations --through core-sw-01,ot-sw-01
   ups flow conversations --seen-by core-sw-01 --service 'https (TCP/443)'
   ups flow conversations --start 2026-09-30T11:00:00Z --end 2026-09-30T11:30:00Z
-  ups flow conversations --query 10.20.0.45 --json`,
+  ups flow conversations --query 10.20.0.45 --json
+  ups flow conversations --between 'NO00 - Oslo',internet
+  ups flow conversations --view 'Oslo to internet'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := app.applyFlowView(cmd, &f); err != nil {
+				return err
+			}
 			q, err := app.flowQueryValues(f)
 			if err != nil {
 				return err
@@ -357,6 +383,7 @@ Monitoring traffic is left out unless --include-monitoring is given.`,
 	}
 	addFlowFlags(c, &f)
 	addFlowFilterFlags(c, &f)
+	addFlowViewFlag(c, &f)
 	c.Flags().StringSliceVar(&f.through, "through", nil, "only conversations passing through both hosts (two names or ids)")
 	return c
 }
@@ -517,6 +544,27 @@ type flowSummary struct {
 	Hosts              []row               `json:"hosts"`
 	Names              map[string]flowName `json:"names"`
 	UnmatchedExporters []string            `json:"unmatched_exporters"`
+	Between            *flowBetween        `json:"between"`
+}
+
+// flowBetween splits traffic between two places by who sent it.
+type flowBetween struct {
+	A    flowPlace `json:"a"`
+	B    flowPlace `json:"b"`
+	AToB float64   `json:"a_to_b_bytes"`
+	BToA float64   `json:"b_to_a_bytes"`
+}
+
+type flowPlace struct {
+	Place string `json:"place"`
+	Label string `json:"label"`
+}
+
+func (p flowPlace) String() string {
+	if p.Label != "" {
+		return p.Label
+	}
+	return p.Place
 }
 
 func newFlowSummaryCmd(app *App) *cobra.Command {
@@ -529,13 +577,21 @@ the busiest hosts, with the names the server knows them by.
 
 Monitoring traffic is left out unless --include-monitoring is given; the
 amount left out is shown, so a small total is not mistaken for a quiet
-network.`,
+network.
+
+With --between A,B the totals are the traffic between the two places, split
+by which side sent it. With one place, they are its traffic to anywhere.`,
 		Example: `  ups flow summary
   ups flow summary --window 24h
   ups flow summary --seen-by core-sw-01 --include-monitoring
-  ups flow summary --host 10.30.100.15 --json`,
+  ups flow summary --host 10.30.100.15 --json
+  ups flow summary --between 10.20.10.0/24,internet
+  ups flow summary --view 'Oslo to internet'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := app.applyFlowView(cmd, &f); err != nil {
+				return err
+			}
 			q, err := app.flowQueryValues(f)
 			if err != nil {
 				return err
@@ -553,12 +609,19 @@ network.`,
 			if !f.includeMonitoring {
 				monitoring = formatBytes(body.Totals.HiddenMonitoringBytes) + " left out"
 			}
-			if err := app.Printer.Object(raw, [][2]string{
+			fields := [][2]string{
 				{"Range", fmt.Sprintf("%s - %s", dash(body.Range.Start), dash(body.Range.End))},
 				{"Traffic", formatBytes(body.Totals.Bytes)},
-				{"Packets", strconv.FormatFloat(body.Totals.Packets, 'f', 0, 64)},
-				{"Monitoring", monitoring},
-			}); err != nil {
+			}
+			if b := body.Between; b != nil {
+				fields = append(fields,
+					[2]string{b.A.String() + " → " + b.B.String(), formatBytes(b.AToB)},
+					[2]string{b.B.String() + " → " + b.A.String(), formatBytes(b.BToA)})
+			}
+			fields = append(fields,
+				[2]string{"Packets", strconv.FormatFloat(body.Totals.Packets, 'f', 0, 64)},
+				[2]string{"Monitoring", monitoring})
+			if err := app.Printer.Object(raw, fields); err != nil {
 				return err
 			}
 			services := &output.Table{
@@ -591,6 +654,7 @@ network.`,
 	}
 	addFlowFlags(c, &f)
 	addFlowFilterFlags(c, &f)
+	addFlowViewFlag(c, &f)
 	return c
 }
 
@@ -622,4 +686,10 @@ func addFlowFilterFlags(c *cobra.Command, f *flowQuery) {
 	c.Flags().StringVar(&f.query, "query", "", "match an IP, port or service name")
 	c.Flags().StringVar(&f.service, "service", "", "exactly this service, e.g. 'https (TCP/443)'")
 	c.Flags().StringVar(&f.host, "host", "", "only conversations with this IP as client or server")
+	c.Flags().StringSliceVar(&f.between, "between", nil,
+		"traffic between two places, or to and from one: location, subnet, device, IP/CIDR or internet")
+}
+
+func addFlowViewFlag(c *cobra.Command, f *flowQuery) {
+	c.Flags().StringVar(&f.view, "view", "", "start from a saved view (id or name); flags given override it")
 }

@@ -902,6 +902,13 @@ ups flow conversations --service 'https (TCP/443)' --host 10.30.100.15
 ups flow conversations --start 2026-09-30T11:00:00Z --end 2026-09-30T11:30:00Z
 ups flow conversations --id-only                      # conversation ids
 ups flow conversation '10.10.2.57|52.114.7.20|443|tcp'  # one conversation, hop by hop
+ups flow places --query oslo                          # places to filter between
+ups flow summary --between 'NO00 - Oslo',internet     # traffic between two places
+ups flow conversations --between 10.20.10.0/24        # one place: its traffic to anywhere
+ups flow view save 'Oslo to internet' --between location:42,internet --shared
+ups flow view list
+ups flow summary --view 'Oslo to internet'            # open a saved view
+ups flow view delete 7 --yes
 ```
 
 **Monitoring traffic is left out by default.** SNMP polls and traps, syslog, flow export
@@ -941,6 +948,32 @@ A conversation is client, server, server port and transport, with both direction
 the client's ephemeral port is dropped, so one session is one row. The server is the side
 with the well-known port, which is a guess for UDP between two high ports. `ASYMMETRIC`
 means the reply took a different path; `flow conversation` then shows both.
+
+### Traffic between places
+
+`--between A,B` keeps the traffic between two places, in either direction; with one place
+it keeps that place's traffic to anywhere. A place is a location, a subnet, a device, an
+IP or CIDR, or `internet`. `ups flow places` lists them with the id to pass
+(`location:42`, `subnet:3`, `host:201`). `flow summary` splits the total by which side
+sent it.
+
+**A name that matches more than one place is refused, not guessed.** The wrong place
+gives a confident answer about the wrong traffic, so `ups` lists the candidates and asks
+for an id. **A location covers only what IPAM puts there**: its subnets and the devices
+tied to it. A location with neither covers nothing, and the server refuses it rather than
+answer with an empty result. When a location's traffic looks too small, check
+its subnets in IPAM before concluding it is quiet.
+
+### Saved views
+
+Saving stores the filters under a name: `ups flow view save <name> [filters]`.
+Opening one is `--view` on `flow summary` and `flow conversations`, and flags given
+alongside `--view` override what it saved. Places given by name are saved by id. **A view saved with `--window` stays
+relative**: "1h" is the hour before it is opened, every time. One saved with
+`--start`/`--end` always shows that fixed range, which is what an incident review wants
+and not what a dashboard wants. `--shared` lets everyone who can see the infrastructure
+use it; only its owner can change or delete it, and deleting a shared view removes it for
+everyone.
 
 `--through` takes exactly two hosts and `--seen-by` one, as names or ids, resolved within
 the active infrastructure. `--window` defaults to `15m` (`1h` for `flow summary`); the

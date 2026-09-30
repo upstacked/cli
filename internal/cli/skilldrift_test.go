@@ -157,6 +157,10 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		{"unmatched flow exporters make answers short", "The answer still looks complete"},
 		{"flow hides monitoring traffic by default", "Monitoring traffic is left out by default"},
 		{"a short flow path has a stated cause", "A path that stops short is not traffic that went nowhere"},
+		// Picking one of several same-named places answers about the wrong
+		// traffic; a relative view silently shows a different time each time.
+		{"an ambiguous place is refused, not guessed", "refused, not guessed"},
+		{"a saved window is relative", "A view saved with `--window` stays"},
 	}
 	for _, r := range required {
 		if !strings.Contains(skill.Content, r.phrase) {
