@@ -40,8 +40,8 @@ many rows - which path tells the rows apart.
 Paths are evaluated against the response after 'response_root_path' has been
 applied, so write them relative to that root rather than to the whole body.
 
-Creating or changing a mapping invalidates whatever dry run had confirmed the
-item, so this dry-runs the item afterwards. Read the result: a mapping whose
+Creating or changing a mapping invalidates whatever probe had confirmed the
+item, so this probes the item afterwards. Read the result: a mapping whose
 paths do not resolve leaves the item collecting nothing, and nothing pages
 anyone about that.`,
 	}
@@ -158,7 +158,7 @@ creating another.
 express: per-field 'filter_rules' and 'alert_rule_config'. Flags override
 what the file sets.
 
-The item is dry-run afterwards, because a mapping is exactly the kind of
+The item is probed afterwards, because a mapping is exactly the kind of
 config that is structurally valid and collects nothing.`,
 		Example: `  ups monitoring item mapping create --item 412 --schema 7 \
     --field if_name=$.ifName --field in_octets=$.ifHCInOctets \
@@ -246,7 +246,7 @@ config that is structurally valid and collects nothing.`,
 	c.Flags().StringArrayVar(&valueMaps, "value-mapping", nil, "show a field through a value mapping, as key=<id|name> (repeatable)")
 	c.Flags().BoolVar(&multi, "multi-valued", false, "the response carries many rows, not one")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON request body; flags override it")
-	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not dry-run the item afterwards")
+	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not probe the item afterwards")
 	return c
 }
 
@@ -267,8 +267,8 @@ change one path is how the other fields silently stop being collected.
 --remove-field drops a key, and --replace-fields makes --field the complete
 set. Both remove coverage, so both confirm first.
 
-The item is dry-run afterwards: a change to a mapping invalidates whatever
-dry run had confirmed the item, and the platform will not tell you the new
+The item is probed afterwards: a change to a mapping invalidates whatever
+probe had confirmed the item, and the platform will not tell you the new
 paths resolve to nothing.`,
 		Example: `  ups monitoring item mapping update 88 --field in_octets=$.ifHCInOctets
   ups monitoring item mapping update 88 --identifier if_name --multi-valued
@@ -383,7 +383,7 @@ paths resolve to nothing.`,
 	c.Flags().BoolVar(&multi, "multi-valued", false, "the response carries many rows, not one")
 	c.Flags().StringVar(&schema, "schema", "", "move the mapping to another data schema")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON request body; flags override it")
-	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not dry-run the item afterwards")
+	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not probe the item afterwards")
 	return c
 }
 
@@ -434,7 +434,7 @@ func (a *App) verifyMappedItem(item string, skip bool) {
 		return
 	}
 	if skip {
-		fmt.Fprintf(a.Stderr, "  %s nobody has confirmed the paths resolve: ups monitoring item dry-run %s\n",
+		fmt.Fprintf(a.Stderr, "  %s nobody has confirmed the paths resolve: ups monitoring item probe %s\n",
 			t.Yellow.Apply(a.Sym().Warn), item)
 		return
 	}
@@ -581,7 +581,7 @@ var rowColumnRef = regexp.MustCompile(`item\[['"](\$[^'"]*)['"]\]`)
 
 // rowColumns derives selected_json_path for a multi-valued mapping that has
 // none, or returns nil. The engine joins rows across exactly those collections,
-// so an empty one itemizes nothing: the mapping saves, dry-runs to zero rows,
+// so an empty one itemizes nothing: the mapping saves, probes to zero rows,
 // and publishes nothing. Every collection a field reads is one it needs.
 func rowColumns(multi bool, existing any, fields []row) []any {
 	if !multi || !emptyJSON(existing) {

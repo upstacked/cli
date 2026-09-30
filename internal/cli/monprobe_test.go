@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// dryRunRecord builds a completed dry-run record. Overrides are merged in so a
+// probeRecord builds a completed probe record. Overrides are merged in so a
 // test only spells out the part it is actually about.
-func dryRunRecord(status string, overrides map[string]any) map[string]any {
+func probeRecord(status string, overrides map[string]any) map[string]any {
 	rec := map[string]any{
 		"id":              17,
 		"monitoring_item": 412,
@@ -57,24 +57,24 @@ func dryRunRecord(status string, overrides map[string]any) map[string]any {
 
 // The point of the command: what the config would have published, without
 // publishing it.
-func TestDryRunQueuesAndReportsWhatWouldHaveBeenCollected(t *testing.T) {
+func TestProbeQueuesAndReportsWhatWouldHaveBeenCollected(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
 
-	res := e.run("monitoring", "item", "dry-run", "412")
+	res := e.run("monitoring", "item", "probe", "412")
 	if res.ExitCode != 0 {
-		t.Fatalf("dry-run failed: %s\n%s", res.Stderr, res.Stdout)
+		t.Fatalf("probe failed: %s\n%s", res.Stderr, res.Stdout)
 	}
-	got := e.stub.requestsTo("POST", dryRunsPath)
+	got := e.stub.requestsTo("POST", probesPath)
 	if len(got) != 1 {
 		t.Fatalf("expected one queued run, got %d", len(got))
 	}
 	if got[0].Body["monitoring_item"] != float64(412) {
 		t.Errorf("expected the item id in the body, got %v", got[0].Body)
 	}
-	contains(t, res.Stderr, "Dry run 17 succeeded")
+	contains(t, res.Stderr, "Probe 17 succeeded")
 	contains(t, res.Stderr, "Nothing was published")
 	contains(t, res.Stdout, "Data points (1)")
 	// Engine values arrive JSON-encoded; a reader should see up, not "\"up\"".
@@ -85,10 +85,10 @@ func TestDryRunQueuesAndReportsWhatWouldHaveBeenCollected(t *testing.T) {
 
 // A failure has to say which stage failed, or the operator is left guessing at
 // a config that is structurally fine.
-func TestDryRunNamesTheStageThatFailedAndItsCandidates(t *testing.T) {
+func TestProbeNamesTheStageThatFailedAndItsCandidates(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	rec := dryRunRecord("failed", nil)
+	rec := probeRecord("failed", nil)
 	trace := rec["trace"].(map[string]any)
 	trace["host_mapping_status"] = map[string]any{
 		"status": "failed",
@@ -102,12 +102,12 @@ func TestDryRunNamesTheStageThatFailedAndItsCandidates(t *testing.T) {
 	}
 	trace["schema_mapping_status"] = nil
 	rec["data_points"] = []any{}
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, rec)
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, rec)
 
-	res := e.run("monitoring", "item", "dry-run", "412")
+	res := e.run("monitoring", "item", "probe", "412")
 	if res.ExitCode == 0 {
-		t.Fatal("a dry run that would collect nothing must exit non-zero")
+		t.Fatal("a probe that would collect nothing must exit non-zero")
 	}
 	contains(t, res.Stderr, "failed at host mapping")
 	contains(t, res.Stdout, "No matching item found")
@@ -121,14 +121,14 @@ func TestDryRunNamesTheStageThatFailedAndItsCandidates(t *testing.T) {
 
 // Every stage succeeding while nothing would be published is still an item that
 // never alerts, so it must not read as a pass.
-func TestDryRunFailsWhenItWouldPublishNothing(t *testing.T) {
+func TestProbeFailsWhenItWouldPublishNothing(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	rec := dryRunRecord("success", map[string]any{"data_points": []any{}})
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, rec)
+	rec := probeRecord("success", map[string]any{"data_points": []any{}})
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, rec)
 
-	res := e.run("monitoring", "item", "dry-run", "412")
+	res := e.run("monitoring", "item", "probe", "412")
 	if res.ExitCode == 0 {
 		t.Fatal("a run that produced no data points must exit non-zero")
 	}
@@ -140,17 +140,17 @@ func TestDryRunFailsWhenItWouldPublishNothing(t *testing.T) {
 // as "this config would publish nothing" blames the config for an outage and
 // sends someone to delete a check nobody ever tested. This record is what a
 // live server actually returned.
-func TestDryRunSeparatesAnAgentOutageFromABadConfig(t *testing.T) {
+func TestProbeSeparatesAnAgentOutageFromABadConfig(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("GET", dryRunsPath+"1/", 200, map[string]any{
+	e.stub.handleMethod("GET", probesPath+"1/", 200, map[string]any{
 		"id": 1, "monitoring_item": 26, "host": 1, "source": "icmp",
 		"status": "failed", "trace": nil, "data_points": nil, "alerts": nil,
 		"error": "The monitoring agent did not report a result in time. " +
 			"Check that the agent for this infrastructure is online.",
 	})
 
-	res := e.run("monitoring", "item", "dry-run", "show", "1")
+	res := e.run("monitoring", "item", "probe", "show", "1")
 	if res.ExitCode == 0 {
 		t.Fatal("a check that never ran must not read as a pass")
 	}
@@ -163,46 +163,46 @@ func TestDryRunSeparatesAnAgentOutageFromABadConfig(t *testing.T) {
 
 // A capped preview presented as complete is the same class of failure as a
 // truncated list read as "no more matches".
-func TestDryRunSaysWhenTheResultWasCapped(t *testing.T) {
+func TestProbeSaysWhenTheResultWasCapped(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	rec := dryRunRecord("success", nil)
+	rec := probeRecord("success", nil)
 	trace := rec["trace"].(map[string]any)
 	trace["data_points_truncated"] = 512
 	trace["request_status"].(map[string]any)["details"].(map[string]any)["response_truncated"] = true
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, rec)
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, rec)
 
-	res := e.run("monitoring", "item", "dry-run", "412")
+	res := e.run("monitoring", "item", "probe", "412")
 	if res.ExitCode != 0 {
-		t.Fatalf("dry-run failed: %s", res.Stderr)
+		t.Fatalf("probe failed: %s", res.Stderr)
 	}
 	contains(t, res.Stderr, "only the first 512 data points")
 	contains(t, res.Stderr, "raw response in the trace was truncated")
 }
 
-func TestDryRunHostFlagIsSent(t *testing.T) {
+func TestProbeHostFlagIsSent(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--host", "88")
+	res := e.run("monitoring", "item", "probe", "412", "--host", "88")
 	if res.ExitCode != 0 {
-		t.Fatalf("dry-run failed: %s", res.Stderr)
+		t.Fatalf("probe failed: %s", res.Stderr)
 	}
-	got := e.stub.requestsTo("POST", dryRunsPath)
+	got := e.stub.requestsTo("POST", probesPath)
 	if len(got) != 1 || got[0].Body["host"] != float64(88) {
 		t.Errorf("expected --host in the body, got %v", got)
 	}
 }
 
 // Overrides are the reason a config can be checked before it is committed.
-func TestDryRunSendsOverridesFromFile(t *testing.T) {
+func TestProbeSendsOverridesFromFile(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	body := `{"parameters": {"url": "https://example.test/api"}, "response_root_path": "$.data"}`
@@ -210,11 +210,11 @@ func TestDryRunSendsOverridesFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--from-file", path)
+	res := e.run("monitoring", "item", "probe", "412", "--from-file", path)
 	if res.ExitCode != 0 {
-		t.Fatalf("dry-run failed: %s", res.Stderr)
+		t.Fatalf("probe failed: %s", res.Stderr)
 	}
-	got := e.stub.requestsTo("POST", dryRunsPath)
+	got := e.stub.requestsTo("POST", probesPath)
 	if len(got) != 1 {
 		t.Fatalf("expected one queued run, got %d", len(got))
 	}
@@ -229,7 +229,7 @@ func TestDryRunSendsOverridesFromFile(t *testing.T) {
 
 // A field the server ignores reads back as "that override was checked" when
 // nothing checked it, so it is refused rather than dropped.
-func TestDryRunRefusesUnknownOverrideFields(t *testing.T) {
+func TestProbeRefusesUnknownOverrideFields(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -237,45 +237,45 @@ func TestDryRunRefusesUnknownOverrideFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--from-file", path)
+	res := e.run("monitoring", "item", "probe", "412", "--from-file", path)
 	if res.ExitCode != 2 {
 		t.Fatalf("expected a usage error, got %d: %s", res.ExitCode, res.Stderr)
 	}
 	contains(t, res.Stderr, "name, paramters")
-	if got := e.stub.requestsTo("POST", dryRunsPath); len(got) != 0 {
+	if got := e.stub.requestsTo("POST", probesPath); len(got) != 0 {
 		t.Error("nothing should be queued when the override file is wrong")
 	}
 }
 
-func TestDryRunWithoutWaitingDoesNotPoll(t *testing.T) {
+func TestProbeWithoutWaitingDoesNotPoll(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--wait", "0")
+	res := e.run("monitoring", "item", "probe", "412", "--wait", "0")
 	if res.ExitCode != 0 {
-		t.Fatalf("dry-run failed: %s", res.Stderr)
+		t.Fatalf("probe failed: %s", res.Stderr)
 	}
-	if got := e.stub.requestsTo("GET", dryRunsPath+"17/"); len(got) != 0 {
+	if got := e.stub.requestsTo("GET", probesPath+"17/"); len(got) != 0 {
 		t.Error("--wait 0 must return as soon as the run is queued")
 	}
-	contains(t, res.Stderr, "Dry run 17 queued")
-	contains(t, res.Stderr, "ups monitoring item dry-run show 17")
+	contains(t, res.Stderr, "Probe 17 queued")
+	contains(t, res.Stderr, "ups monitoring item probe show 17")
 	// The server answers the POST with "pending" too, but nobody was waiting,
 	// so the late-agent advice would be wrong here.
 	notContains(t, res.Stderr, "Queue a new run")
 }
 
 // A 400 that is not about the data source must not be answered with the
-// data-source hint: `item test` needs a host just as much as a dry run does.
-func TestDryRunDoesNotBlameTheDataSourceForEveryRejection(t *testing.T) {
+// data-source hint: `item test` needs a host just as much as a probe does.
+func TestProbeDoesNotBlameTheDataSourceForEveryRejection(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 400, map[string]any{
+	e.stub.handleMethod("POST", probesPath, 400, map[string]any{
 		"detail": "This monitoring item has no host to run against.",
 	})
 
-	res := e.run("monitoring", "item", "dry-run", "6")
+	res := e.run("monitoring", "item", "probe", "6")
 	if res.ExitCode != 2 {
 		t.Fatalf("expected a usage error, got %d: %s", res.ExitCode, res.Stderr)
 	}
@@ -286,13 +286,13 @@ func TestDryRunDoesNotBlameTheDataSourceForEveryRejection(t *testing.T) {
 
 // A run is handed to an agent exactly once, so "still pending" must not read as
 // "retry by looking again".
-func TestDryRunStillPendingSaysToQueueANewRun(t *testing.T) {
+func TestProbeStillPendingSaysToQueueANewRun(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, map[string]any{"id": 17, "status": "pending"})
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--wait", "1ms")
+	res := e.run("monitoring", "item", "probe", "412", "--wait", "1ms")
 	if res.ExitCode != 0 {
 		t.Fatalf("a pending run is not a failure: %s", res.Stderr)
 	}
@@ -301,31 +301,31 @@ func TestDryRunStillPendingSaysToQueueANewRun(t *testing.T) {
 	contains(t, res.Stderr, "Queue a new run")
 }
 
-func TestDryRunShowReadsBackAQueuedRun(t *testing.T) {
+func TestProbeShowReadsBackAQueuedRun(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
 
-	res := e.run("monitoring", "item", "dry-run", "show", "17")
+	res := e.run("monitoring", "item", "probe", "show", "17")
 	if res.ExitCode != 0 {
-		t.Fatalf("dry-run show failed: %s", res.Stderr)
+		t.Fatalf("probe show failed: %s", res.Stderr)
 	}
 	contains(t, res.Stdout, "Data points (1)")
-	if got := e.stub.requestsTo("POST", dryRunsPath); len(got) != 0 {
+	if got := e.stub.requestsTo("POST", probesPath); len(got) != 0 {
 		t.Error("reading a run must never queue another one")
 	}
 }
 
 // A source with no mapping stages is refused; the message has to name the
 // check that still applies rather than leaving a dead end.
-func TestDryRunExplainsAnUnsupportedDataSource(t *testing.T) {
+func TestProbeExplainsAnUnsupportedDataSource(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 400, map[string]any{
+	e.stub.handleMethod("POST", probesPath, 400, map[string]any{
 		"detail": "Dry runs are only supported for api_data, snmpstd and icmp",
 	})
 
-	res := e.run("monitoring", "item", "dry-run", "412")
+	res := e.run("monitoring", "item", "probe", "412")
 	if res.ExitCode != 2 {
 		t.Fatalf("expected a usage error, got %d: %s", res.ExitCode, res.Stderr)
 	}
@@ -333,10 +333,10 @@ func TestDryRunExplainsAnUnsupportedDataSource(t *testing.T) {
 	contains(t, res.Stderr, "ups monitoring item test 412")
 }
 
-func TestDryRunPartialNamesTheFieldsThatDidNotMap(t *testing.T) {
+func TestProbePartialNamesTheFieldsThatDidNotMap(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	rec := dryRunRecord("partial", nil)
+	rec := probeRecord("partial", nil)
 	rec["trace"].(map[string]any)["schema_mapping_status"] = map[string]any{
 		"status": "partial", "success": 3, "total": 4,
 		"details": map[string]any{
@@ -347,10 +347,10 @@ func TestDryRunPartialNamesTheFieldsThatDidNotMap(t *testing.T) {
 			}},
 		},
 	}
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, rec)
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, rec)
 
-	res := e.run("monitoring", "item", "dry-run", "412")
+	res := e.run("monitoring", "item", "probe", "412")
 	if res.ExitCode != 0 {
 		t.Fatalf("a partial run still collected something: %s", res.Stderr)
 	}
@@ -360,22 +360,22 @@ func TestDryRunPartialNamesTheFieldsThatDidNotMap(t *testing.T) {
 }
 
 // --dry-run is global and means "show me the request". A command that also
-// dry-runs on the server must still send nothing.
-func TestDryRunCommandHonoursTheGlobalDryRunFlag(t *testing.T) {
+// probes on the server must still send nothing.
+func TestProbeCommandHonoursTheGlobalDryRunFlag(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--dry-run")
+	res := e.run("monitoring", "item", "probe", "412", "--dry-run")
 	if res.ExitCode != 0 {
 		t.Fatalf("unexpected failure: %s", res.Stderr)
 	}
-	if got := e.stub.requestsTo("POST", dryRunsPath); len(got) != 0 {
+	if got := e.stub.requestsTo("POST", probesPath); len(got) != 0 {
 		t.Error("--dry-run must not queue a run")
 	}
-	contains(t, res.Stderr, "POST "+dryRunsPath)
+	contains(t, res.Stderr, "POST "+probesPath)
 }
 
-// Config status is derived from dry runs now, so it is the field that says
+// Config status is derived from probes now, so it is the field that says
 // whether anything has confirmed the item collects data.
 func TestMonitoringItemShowsConfigStatus(t *testing.T) {
 	e := newEnv(t)
@@ -396,7 +396,7 @@ func TestMonitoringItemShowsConfigStatus(t *testing.T) {
 // failedSchemaMapping is the shape a clock primitive the server does not know
 // produces: every stage ran, nothing mapped, and the reason is per field.
 func failedSchemaMapping() row {
-	rec := dryRunRecord("failed", nil)
+	rec := probeRecord("failed", nil)
 	rec["trace"].(map[string]any)["schema_mapping_status"] = map[string]any{
 		"status": "failed", "success": 0, "total": 1,
 		"details": map[string]any{
@@ -412,18 +412,18 @@ func failedSchemaMapping() row {
 }
 
 func stubFailedRun(e *env, id string) {
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": id, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+id+"/", 200, failedSchemaMapping())
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": id, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+id+"/", 200, failedSchemaMapping())
 }
 
 // A caller reading --json gets the record, not a table: the reason a stage
 // failed is in the output of the command that failed, not three commands away.
-func TestDryRunAsJSONEmitsTheRecordWithItsStageErrors(t *testing.T) {
+func TestProbeAsJSONEmitsTheRecordWithItsStageErrors(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	stubFailedRun(e, "18")
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--json")
+	res := e.run("monitoring", "item", "probe", "412", "--json")
 
 	var got map[string]any
 	if err := json.Unmarshal([]byte(res.Stdout), &got); err != nil {
@@ -435,7 +435,7 @@ func TestDryRunAsJSONEmitsTheRecordWithItsStageErrors(t *testing.T) {
 	}
 }
 
-// The same has to hold for a command that dry-runs as a side effect, which is
+// The same has to hold for a command that probes as a side effect, which is
 // where a table on stdout is least expected.
 func TestMappingUpdateAsJSONReportsTheVerificationAsJSON(t *testing.T) {
 	e := newEnv(t)
@@ -455,12 +455,12 @@ func TestMappingUpdateAsJSONReportsTheVerificationAsJSON(t *testing.T) {
 
 // --wait 0 returns as soon as the run is queued. In JSON mode that record is
 // still the whole point of the call, so it must be emitted.
-func TestDryRunQueuedAsJSONStillEmitsTheRecord(t *testing.T) {
+func TestProbeQueuedAsJSONStillEmitsTheRecord(t *testing.T) {
 	e := newEnv(t)
 	e.login()
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 19, "status": "pending"})
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 19, "status": "pending"})
 
-	res := e.run("monitoring", "item", "dry-run", "412", "--json", "--wait", "0")
+	res := e.run("monitoring", "item", "probe", "412", "--json", "--wait", "0")
 
 	var got map[string]any
 	if err := json.Unmarshal([]byte(res.Stdout), &got); err != nil {
@@ -469,4 +469,25 @@ func TestDryRunQueuedAsJSONStillEmitsTheRecord(t *testing.T) {
 	if got["id"] == nil {
 		t.Errorf("the queued run's id is what a later show needs: %v", got)
 	}
+}
+
+// Scripts and skills installed before the rename still call dry-run. It has to
+// keep working, and stay out of help so nothing new learns the old name.
+func TestDryRunStillRunsAProbeButIsHidden(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
+
+	res := e.run("monitoring", "item", "dry-run", "412")
+	if res.ExitCode != 0 {
+		t.Fatalf("dry-run failed: %s\n%s", res.Stderr, res.Stdout)
+	}
+	if got := e.stub.requestsTo("POST", probesPath); len(got) != 1 {
+		t.Fatalf("expected one queued probe, got %d", len(got))
+	}
+
+	help := e.run("monitoring", "item", "--help")
+	contains(t, help.Stdout, "probe")
+	notContains(t, help.Stdout, "  dry-run ")
 }

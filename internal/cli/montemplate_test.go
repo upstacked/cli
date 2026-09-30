@@ -237,7 +237,7 @@ func TestTemplateItemIsCreatedWithoutAHostAndIsNotTested(t *testing.T) {
 	if got[0].Body["organization"] != float64(3) {
 		t.Errorf("expected the template's organization, got %v", got[0].Body["organization"])
 	}
-	if reqs := e.stub.requestsTo("POST", dryRunsPath); len(reqs) != 0 {
+	if reqs := e.stub.requestsTo("POST", probesPath); len(reqs) != 0 {
 		t.Error("a host-less item has no device to poll; it must not be checked")
 	}
 	contains(t, res.Stderr, "cannot be checked until it is applied")

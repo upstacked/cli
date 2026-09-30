@@ -36,7 +36,7 @@ Names are resolved through the local MIB cache (ups mib sync); numeric OIDs are
 sent as given. A table, an entry or single columns all work. Walking a whole
 table on a large switch returns a lot: prefer the columns you mean to map.
 
-It runs as a dry run with no item behind it. Nothing is saved or published.
+It runs as a probe with no item behind it. Nothing is saved or published.
 
 The output ends with what to put on an item to poll the same columns, and the
 paths a schema mapping uses to read each one.`,
@@ -62,12 +62,12 @@ paths a schema mapping uses to read each one.`,
 			}
 			var dispatch jsonRaw
 			err = app.Spin("Queueing a walk of host "+args[0], func() error {
-				return app.mutate("POST", dryRunsPath, body, &dispatch)
+				return app.mutate("POST", probesPath, body, &dispatch)
 			})
 			if err != nil {
 				if errs.StatusOf(err) == http.StatusBadRequest && strings.Contains(err.Error(), "monitoring_item") {
 					return errs.General("this server cannot walk a device without an item").
-						WithHint("it predates device walks. Dry-run an SNMP item with --from-file '{\"parameters\": {\"oid\": [...]}}' instead")
+						WithHint("it predates device walks. Probe an SNMP item with --from-file '{\"parameters\": {\"oid\": [...]}}' instead")
 				}
 				return err
 			}
@@ -76,10 +76,10 @@ paths a schema mapping uses to read each one.`,
 			}
 			var m row
 			_ = jsonUnmarshal(dispatch, &m)
-			if wait > dryRunServerTimeout {
-				wait = dryRunServerTimeout
+			if wait > probeServerTimeout {
+				wait = probeServerTimeout
 			}
-			m, _, err = app.awaitDryRun(str(m, "id"), wait, m, dispatch)
+			m, _, err = app.awaitProbe(str(m, "id"), wait, m, dispatch)
 			if err != nil {
 				return err
 			}
@@ -87,7 +87,7 @@ paths a schema mapping uses to read each one.`,
 		},
 	}
 	c.Flags().StringVar(&credential, "credential", "", "SNMP credential id (required)")
-	c.Flags().DurationVar(&wait, "wait", dryRunWait, "how long to wait for the agent")
+	c.Flags().DurationVar(&wait, "wait", probeWait, "how long to wait for the agent")
 	return c
 }
 
@@ -138,9 +138,9 @@ func (a *App) reportWalk(m row, bases []string, names map[string]string) error {
 	trace := objField(m, "trace")
 	fetch := objField(trace, "request_status")
 
-	if str(m, "status") == dryRunPending {
+	if str(m, "status") == probePending {
 		return errs.General("the agent has not reported walk %s yet", runID).
-			WithHint("read it later: ups monitoring item dry-run show %s", runID)
+			WithHint("read it later: ups monitoring item probe show %s", runID)
 	}
 	if fetch == nil {
 		msg := str(m, "error")

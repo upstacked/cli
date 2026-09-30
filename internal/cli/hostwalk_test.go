@@ -44,8 +44,8 @@ func splitArcs(oid string) []string {
 }
 
 func stubWalk(e *env, status string, response any) {
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 30, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"30/", 200, map[string]any{
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 30, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"30/", 200, map[string]any{
 		"id": 30, "status": "success",
 		"trace": map[string]any{
 			"request_status": map[string]any{
@@ -70,7 +70,7 @@ func TestHostWalkProbesTheDeviceWithoutAnItem(t *testing.T) {
 		t.Fatalf("walk failed: %s", res.Stderr)
 	}
 
-	body := e.stub.requestsTo("POST", dryRunsPath)[0].Body
+	body := e.stub.requestsTo("POST", probesPath)[0].Body
 	if _, ok := body["monitoring_item"]; ok {
 		t.Error("a walk has no item behind it")
 	}

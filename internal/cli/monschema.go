@@ -154,7 +154,7 @@ func newMonSchemaDataCmd(app *App) *cobra.Command {
 one per identifier (interface, sensor, disk), with value mappings applied the
 way the host page shows them: "UP" where the device sent 1.
 
-This is the end of the feedback loop. A dry run proves what an item would
+This is the end of the feedback loop. A probe proves what an item would
 publish; this proves the agent actually published it, into the fields the
 portal reads. No rows means nothing arrived: the item is not scheduled, the
 host is not in monitoring, or the agent cannot reach the device.`,

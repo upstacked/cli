@@ -86,7 +86,7 @@ collect nothing, because whether it works depends on the shape of what the devic
 — which varies by device, firmware and API version, so no amount of static checking
 settles it. Running it is the only feedback loop that exists.
 
-**A dry run is that feedback loop.** It executes the real monitoring pipeline once —
+**A probe is that feedback loop.** It executes the real monitoring pipeline once —
 fetch, host mapping, schema mapping, alert evaluation — with the writing ends replaced by
 ones that record instead of publish. Nothing reaches Elasticsearch, no alert is raised, and
 what comes back is the data the config *would* have produced, in the shape real monitoring
@@ -94,22 +94,22 @@ data takes. This is how you confirm a config you generated actually works before
 it as done.
 
 ```
-ups monitoring item create --host <id> --name "CPU" --module <id>   # creates, then dry-runs
-ups monitoring item dry-run <item-id>                               # re-check an existing item
-ups monitoring item dry-run <item-id> --host <host-id>              # against a specific device
-ups monitoring item dry-run <item-id> --from-file config.json       # with unsaved overrides
-ups monitoring item dry-run show <run-id>                           # read back a queued run
+ups monitoring item create --host <id> --name "CPU" --module <id>   # creates, then probes
+ups monitoring item probe <item-id>                                 # re-check an existing item
+ups monitoring item probe <item-id> --host <host-id>                # against a specific device
+ups monitoring item probe <item-id> --from-file config.json         # with unsaved overrides
+ups monitoring item probe show <run-id>                             # read back a queued run
 ```
 
-`create` therefore dry-runs the item it just made. Read the result. If the dry run fails,
+`create` therefore probes the item it just made. Read the result. If the probe fails,
 the item exists but is collecting nothing — fix it or remove it, and tell the user; do not
-leave it and move on. A dry run that would publish nothing exits non-zero, whether it
+leave it and move on. A probe that would publish nothing exits non-zero, whether it
 failed outright or every stage passed and produced no data points.
 
 **You can check a config before saving it.** `--from-file` takes a JSON object of overrides
 — `parameters`, `mapping_rules`, `response_root_path`, `host_specific_api_call`, `timeout`,
-`schema_mapping`, `host` — applied in memory and never written. So the loop is: dry-run the
-candidate config, read the trace, adjust, dry-run again, and only then save. A field the
+`schema_mapping`, `host` — applied in memory and never written. So the loop is: probe the
+candidate config, read the trace, adjust, probe again, and only then save. A field the
 API would not honour is refused rather than silently dropped, because a dropped override
 reads back as "that was checked" when nothing checked it.
 
@@ -139,9 +139,9 @@ that did not resolve**, naming the field, the expression as written, and what we
 expression does not have that primitive, which is a different problem from a path that
 found nothing — no amount of rewriting the path fixes it. Read those lines before changing
 anything; they are in the output of the command that failed, so there is no need to go
-looking for them with `dry-run show`.
+looking for them with `probe show`.
 
-With `--json`, every command that dry-runs — `item dry-run`, and `item create` and
+With `--json`, every command that probes — `item probe`, and `item create` and
 `item mapping update` when they verify — writes the whole run record to stdout and nothing
 else, so the same errors are at `.trace.schema_mapping_status.details.errors` and the
 human tables never contaminate the document.
@@ -150,14 +150,14 @@ human tables never contaminate the document.
 Viptela, Webex, Cybervision and the legacy `snmp` worker are refused with a message saying
 so. For those, `ups monitoring item test` is the check that still applies.
 
-**The dry run reads `data_source`, not the legacy `action_type`.** An item typed by a
+**The probe reads `data_source`, not the legacy `action_type`.** An item typed by a
 legacy action (`--data-source snmp:walk`, an id) had no `data_source` on older servers and
-is refused with "no data source that can be dry run". Set it by name —
+is refused with "no data source that can be probe". Set it by name —
 `ups monitoring item update <id> --data-source snmp` (or `api`, `icmp`) — which writes
 `data_source` directly. If it is still refused, fall back to `ups monitoring item test`,
 say plainly that the stronger check could not run, and do not report the item as verified.
 
-**A dry run is queued, not synchronous, and handed to an agent exactly once.** It runs on
+**A probe is queued, not synchronous, and handed to an agent exactly once.** It runs on
 the customer's monitoring agent, which polls for work every few seconds, so expect a wait.
 `ups` polls for the outcome rather than reporting the dispatch as a success. A run nobody
 reports on is failed at two minutes — but only when it is read, so poll rather than assume
@@ -174,7 +174,7 @@ Every monitoring item belongs to an organization, and the API refuses a create w
 asks for `--org` rather than picking. That is not a guess worth making — an item filed under
 the wrong organization is invisible to the people who should see it.
 
-### `test` answers a weaker question than `dry-run`
+### `test` answers a weaker question than `probe`
 
 ```
 ups monitoring item test <item-id>      # fetch only: did the device answer?
@@ -187,14 +187,14 @@ whether something answered. It also re-implements its own SNMP/HTTP/ICMP calls a
 through to a bare HTTP GET for anything it does not recognise, so a passing test is weaker
 evidence than it looks.
 
-Reach for `dry-run` by default. Reach for `test` when the data source has no mapping stages
-to preview and the dry run refuses it. `create` does this automatically: it dry-runs, falls
+Reach for `probe` by default. Reach for `test` when the data source has no mapping stages
+to preview and the probe refuses it. `create` does this automatically: it probes, falls
 back to a test when the source is unsupported, and says which check actually ran.
 
-### `CONFIG` on an item means a dry run confirmed it
+### `CONFIG` on an item means a probe confirmed it
 
-`monitoring_item_config_status` is derived from dry runs, and `ups monitoring item list`
-and `show` display it. It reads `COMPLETE` only while a successful dry run still matches
+`monitoring_item_config_status` is derived from probes, and `ups monitoring item list`
+and `show` display it. It reads `COMPLETE` only while a successful probe still matches
 the item's current config fingerprint — which covers the config fields, the schema mappings
 *and* the device. Editing the config or repointing it at another host invalidates that and
 flips the item back to `INCOMPLETE`.
@@ -221,7 +221,7 @@ ups monitoring template apply <id> --host <h1,h2>
 
 `apply` lists the items it will remove and confirms before writing, and preflights first
 unless `--skip-preflight` is given. Read that list rather than passing `--yes` past it: it
-is the only place the removal is ever visible. The items it creates are unchecked; dry-run
+is the only place the removal is ever visible. The items it creates are unchecked; probe
 them on the first host before applying to the rest.
 
 Templates are authored the other way round from items:
@@ -243,10 +243,10 @@ Two things about this shape trip people up, and both are checked by the CLI:
   through without telling the user which other templates change.
 
 A host-less template item has no device to poll until it is applied, so the usual
-create-then-dry-run loop has nothing to run against. Give it one with `--test-host
-<host-id>` on `item create` or `item update`: every dry run after a change then runs
+create-then-probe loop has nothing to run against. Give it one with `--test-host
+<host-id>` on `item create` or `item update`: every probe after a change then runs
 against that device, without applying the template. Without a test host, apply the
-template to one host and dry-run there before rolling it out to the rest.
+template to one host and probe there before rolling it out to the rest.
 
 ### Preflight a runbook before running it
 
@@ -417,7 +417,7 @@ to get wrong by hand:
   mapped row by key; a path finds nothing, and every row's alerts then share
   one identity. `ups` refuses anything that is not one of the mapping's keys.
 
-A dry run of the item then settles the rest.
+A probe of the item then settles the rest.
 
 ### 2b. API: read the documentation, then one real response
 
@@ -431,7 +431,7 @@ Then fetch one real response and write the paths against that, not against the
 documentation. The two disagree often enough — a field renamed, a list wrapped
 in an envelope, a version that never shipped — that paths derived from docs
 alone are a guess. `ups monitoring item test <id>` returns the raw body, and
-this is the one job it is better at than a dry run.
+this is the one job it is better at than a probe.
 
 ### 3. Prove the config before saving it
 
@@ -440,7 +440,7 @@ ups monitoring action list
 ups monitoring interval list
 ups monitoring item create --host 12 --name "Interface counters" --module 3 --data-source snmp \
   --interval 5m --credential-tag SNMPv2 --test-host 12
-ups monitoring item dry-run <item-id> --from-file config.json
+ups monitoring item probe <item-id> --from-file config.json
 ups monitoring item update <item-id> --from-file config.json
 ```
 
@@ -461,7 +461,7 @@ is applied to.
 
 Prefer `api`, `snmp` or `icmp`. Those are data sources, the current model: they
 are written as `data_source`, the server derives the legacy `action_type` from
-them, and they are the only sources a dry run can execute. `snmp` is the
+them, and they are the only sources a probe can execute. `snmp` is the
 item-level SNMP pipeline, which walks.
 
 Anything else is a legacy action from `ups monitoring action list`, written as
@@ -471,11 +471,11 @@ named scalars, `walk` enumerates a table. A bare type that matches two is refuse
 with both named; do not pick one to get past the error. A number is always a legacy action id, never a data
 source id — the two id spaces overlap, so `1` means `meraki:host_status`, not API.
 
-The dry run reports the source under a third set of worker names (`snmpstd` for
+The probe reports the source under a third set of worker names (`snmpstd` for
 the current SNMP source, `snmp` for the legacy one). Read the trace rather than
 assuming which is meant.
 
-`create` makes the item and dry-runs it. `dry-run --from-file` then applies a
+`create` makes the item and probes it. `probe --from-file` then applies a
 candidate config in memory — `parameters`, `response_root_path`,
 `mapping_rules`, `host_specific_api_call`, `timeout`, `schema_mapping`, `host`
 — and reports what it would collect without saving any of it. Iterate there.
@@ -485,9 +485,9 @@ the config that gets stored, with nothing retyped in between. `item create`
 accepts it too, which is how a config proved on one device is copied onto the
 next.
 
-Every edit invalidates the dry run that confirmed the item, so `update`
-dry-runs again afterwards. That is not ceremony: the config status is derived
-from dry runs, and nothing else will ever tell you the new value stopped
+Every edit invalidates the probe that confirmed the item, so `update`
+probes again afterwards. That is not ceremony: the config status is derived
+from probes, and nothing else will ever tell you the new value stopped
 resolving.
 
 ### 4. Map the response onto the schema
@@ -532,7 +532,7 @@ changed, because dropping them unasked would be a silent change of meaning.
 first.
 
 For the parts flags cannot express — filter rules and alert rule config —
-`--from-file` takes the whole request body, and `dry-run --from-file` will
+`--from-file` takes the whole request body, and `probe --from-file` will
 preview a `schema_mapping` before any of it is written.
 
 ### 4b. Make the values readable: value mappings
@@ -553,7 +553,7 @@ ups monitoring item mapping update <mapping-id> --value-mapping oper_status=ifOp
 **Reuse before creating.** The organization usually has one already for the
 common cases (interface status, duplex, speed), the portal lists them by name,
 and `create` refuses a duplicate name. Pick the existing mapping whose rules
-match the raw values the dry run or `host walk` showed — `show` prints them —
+match the raw values the probe or `host walk` showed — `show` prints them —
 and create one only when none does.
 
 Rules are tried in order and the first match wins: `VALUE=LABEL[@COLOUR]` for
@@ -588,7 +588,7 @@ the host's items.
 
 Value mappings change only what people see — stored data and alert rules read
 the raw value, so an alert rule on status still compares against `2`, not
-`DOWN`. A dry run shows raw values for the same reason; the mapped label is
+`DOWN`. A probe shows raw values for the same reason; the mapped label is
 checked on the host page after applying.
 
 Applying a template **copies** each value mapping's rules onto the host's items.
@@ -626,7 +626,7 @@ alert about any of them.
 ### 6. Handing an item to the portal
 
 A person finishing an item in the web UI sees its response in the mapping step,
-and that list comes from the item's last **test** result. A dry run writes no
+and that list comes from the item's last **test** result. A probe writes no
 such result, so an item built here opens with nothing to map until you run:
 
 ```
@@ -940,8 +940,8 @@ below the cut: raise `--limit` or narrow with `--query` before concluding it did
 | **value** mapping | How a field's raw value reads on the portal (`1` → UP in green). Shared by name; copied onto hosts when a template is applied. Changes nothing stored or alerted on. |
 | `ups mib walk` | Reads the local MIB cache. Offline, and never touches the device. |
 | `ups host walk` | Asks the device, through the agent, what it returns. Nothing is saved or published. |
-| `data_source` / `action_type` / worker name | An item's data source. `data_source` (API, SNMP, ICMP) is the current field and what the dry run reads; `action_type` is the legacy one the server derives from it; a dry-run trace names the worker (`snmpstd`, `api_data`, `icmp`). |
-| `item dry-run` | Runs the whole pipeline, publishes nothing, tells you whether the config collects data. |
+| `data_source` / `action_type` / worker name | An item's data source. `data_source` (API, SNMP, ICMP) is the current field and what the probe reads; `action_type` is the legacy one the server derives from it; a probe trace names the worker (`snmpstd`, `api_data`, `icmp`). |
+| `item probe` | Runs the whole pipeline, publishes nothing, tells you whether the config collects data. |
 | `item test` | Fetches the raw response and stops. Cannot tell you whether the config collects data. |
 | `change` | The planned or recorded work. |
 | `change_log` | The field-level audit trail of what was actually mutated. |
@@ -1023,9 +1023,9 @@ Stop and ask the user rather than guessing:
 - A diff proposes deleting monitoring items, hosts, or credentials that the user did not
   explicitly ask to remove.
 - A runbook preflight reports missing credentials.
-- A monitoring item was created but its dry run collected nothing, or the dry run was
+- A monitoring item was created but its probe collected nothing, or the probe was
   refused and only the weaker test ran.
-- A mapping's paths resolve to nothing in the dry run, or a multi-valued mapping has
+- A mapping's paths resolve to nothing in the probe, or a multi-valued mapping has
   no identifier and the user has not said the response is single-row.
 - `ups mib show` cannot resolve the OID you were about to poll.
 - A legacy `--data-source` type matched more than one action. Ask which; they

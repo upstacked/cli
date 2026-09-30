@@ -124,15 +124,15 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		{"no-TTY operation", "without a terminal"},
 		{"--yes is not a safety override", "not the *safety*"},
 		{"apply is not transactional", "Nothing is rolled back"},
-		// A dry run touches a live device but writes nothing. An agent that
+		// A probe touches a live device but writes nothing. An agent that
 		// does not know that will avoid the one check worth running.
-		{"a dry run publishes nothing", "no alert is raised"},
+		{"a probe publishes nothing", "no alert is raised"},
 		// The failure mode of a queued, once-only job: re-reading it forever
 		// instead of queueing another.
-		{"a dry run is dispatched once", "Queue a new run"},
+		{"a probe is dispatched once", "Queue a new run"},
 		// A capped preview reported as complete is the same class of mistake
 		// as a truncated list reported as "no more matches".
-		{"dry-run results are capped", "capped preview"},
+		{"probe results are capped", "capped preview"},
 		// `test` looks like the same check and is not.
 		{"test is the weaker check", "stops at the raw response"},
 		// INCOMPLETE is not a warning anything acts on.

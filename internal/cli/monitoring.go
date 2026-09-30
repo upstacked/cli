@@ -32,7 +32,7 @@ func newMonitoringCmd(app *App) *cobra.Command {
   event     a fired alert
 
 A misconfigured item does not error. It returns nothing, or the wrong
-field, so 'ups monitoring item dry-run' is the feedback loop that
+field, so 'ups monitoring item probe' is the feedback loop that
 distinguishes healthy from never-collected-anything: it runs the real
 pipeline and shows the data the config would have published, without
 publishing any of it.`,
@@ -47,7 +47,7 @@ func newMonItemCmd(app *App) *cobra.Command {
 	c := &cobra.Command{Use: "item", Short: "Monitoring items"}
 	c.AddCommand(
 		newMonItemListCmd(app), newMonItemShowCmd(app),
-		newMonItemDryRunCmd(app), newMonItemTestCmd(app),
+		newMonItemProbeCmd(app), newMonItemDryRunCmd(app), newMonItemTestCmd(app),
 		newMonItemCreateCmd(app), newMonItemUpdateCmd(app),
 		newMonItemDeleteCmd(app), newMonItemResultsCmd(app),
 		newMonItemMappingCmd(app),
@@ -79,7 +79,7 @@ func newMonItemListCmd(app *App) *cobra.Command {
 				Columns: []string{"ID", "NAME", "HOST", "MODULE", "INTERVAL", "CONFIG"},
 				Empty:   "No monitoring items found.",
 				Cells: func(m row) []string {
-					// CONFIG is INCOMPLETE until a dry run has confirmed the
+					// CONFIG is INCOMPLETE until a probe has confirmed the
 					// item's current config against its current device, so it
 					// is the column that says "nobody has checked this".
 					return []string{
@@ -129,14 +129,14 @@ func newMonItemTestCmd(app *App) *cobra.Command {
 	var wait time.Duration
 	c := &cobra.Command{
 		Use:   "test <id>",
-		Short: "Fetch a monitoring item's raw response (weaker than a dry run)",
+		Short: "Fetch a monitoring item's raw response (weaker than a probe)",
 		Long: `Run a monitoring item once and report the raw response.
 
 This stops at the fetch. It never runs host or schema mapping, so it cannot
 tell you whether the config produces data - only whether the device answered.
-Prefer 'ups monitoring item dry-run', which runs the whole pipeline and shows
+Prefer 'ups monitoring item probe', which runs the whole pipeline and shows
 what would have been published. Reach for this one when the item's data source
-has no mapping stages to preview and the dry run refuses it.
+has no mapping stages to preview and the probe refuses it.
 
 The test is dispatched to the monitoring agent and runs asynchronously, so
 this waits for the outcome rather than reporting the dispatch as a success.
@@ -287,8 +287,8 @@ func newMonItemCreateCmd(app *App) *cobra.Command {
 		Long: `Create a monitoring item.
 
 With --host the item is created on that device and, unless --skip-test is
-given, dry-run immediately so a silently-broken check is caught now rather than
-during an incident. The dry run publishes nothing; it only reports what the
+given, probe immediately so a silently-broken check is caught now rather than
+during an incident. The probe publishes nothing; it only reports what the
 config would have collected.
 
 With --template the item is created without a host: a blank that the template
@@ -301,7 +301,7 @@ ICMP, and an item without one polls nothing at all - so this refuses rather
 than creating a check that can never run. Take an id, a "type:name" pair, or a
 bare type that offers only one action: ups monitoring action list.
 
---from-file starts from a JSON config in the same shape 'dry-run --from-file'
+--from-file starts from a JSON config in the same shape 'probe --from-file'
 takes, so a config already proved on one device can be copied onto another in
 one step rather than retyped as flags. Explicit flags override the file.
 
@@ -415,14 +415,14 @@ nothing - see 'ups monitoring item mapping'.`,
 			}
 
 			if skipTest || id == "" {
-				fmt.Fprintf(app.Stderr, "  %s verify it collects data: ups monitoring item dry-run %s\n",
+				fmt.Fprintf(app.Stderr, "  %s verify it collects data: ups monitoring item probe %s\n",
 					t.Yellow.Apply(sym.Warn), id)
 				return nil
 			}
 			app.verifyCreatedItem(id)
 			if template != "" {
 				// The portal's mapping step offers JSON paths from the item's
-				// last test result, and a dry run writes none. Without one, the
+				// last test result, and a probe writes none. Without one, the
 				// item opens in the web UI with nothing to map.
 				fmt.Fprintf(app.Stderr, "  %s to finish this item in the portal, record a sample first: ups monitoring item test %s\n",
 					t.Dim.Apply("note:"), id)
@@ -443,7 +443,7 @@ nothing - see 'ups monitoring item mapping'.`,
 	c.Flags().StringVar(&description, "description", "", "description")
 	c.Flags().StringVar(&rootPath, "response-root-path", "", "JSON path the field paths are evaluated relative to")
 	c.Flags().StringVar(&dataSource, "data-source", "", "api, snmp or icmp; or a legacy action id, \"type:name\" or unambiguous type (required)")
-	c.Flags().StringVar(&fromFile, "from-file", "", "JSON config to start from, in the same shape 'dry-run --from-file' takes")
+	c.Flags().StringVar(&fromFile, "from-file", "", "JSON config to start from, in the same shape 'probe --from-file' takes")
 	c.Flags().StringVar(&interval, "interval", "", "how often to poll, e.g. 5m or 1h (required): ups monitoring interval list")
 	c.Flags().IntVar(&timeout, "timeout", 0, "per-poll timeout in seconds")
 	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not verify the item after creating it")
@@ -481,7 +481,7 @@ func (a *App) patchItem(id string, body map[string]any) error {
 
 // verifyCreatedItem confirms a freshly created item actually collects something.
 //
-// A dry run is the check that answers the question - it runs the mapping stages
+// A probe is the check that answers the question - it runs the mapping stages
 // the test endpoint never reaches - but only three data sources have those
 // stages, and the server refuses the rest with a 400. Falling back to the
 // weaker test is better than leaving the item unverified, so long as which
@@ -493,10 +493,10 @@ func (a *App) patchItem(id string, body map[string]any) error {
 func (a *App) verifyCreatedItem(id string) {
 	t, sym := a.Theme(), a.Sym()
 
-	m, raw, err := a.dryRunItem(id, "", "", dryRunWait)
+	m, raw, err := a.probeItem(id, "", "", probeWait)
 	switch {
 	case err == nil:
-		if rerr := a.reportDryRun(m, raw); rerr != nil {
+		if rerr := a.reportProbe(m, raw); rerr != nil {
 			// The hint distinguishes a config that collects nothing from a run
 			// that never happened; a blanket "delete it" would be wrong advice
 			// for the second.
@@ -509,7 +509,7 @@ func (a *App) verifyCreatedItem(id string) {
 		}
 		return
 	case errs.StatusOf(err) != http.StatusBadRequest:
-		fmt.Fprintf(a.Stderr, "%s The item was created but could not be dry-run: %v\n",
+		fmt.Fprintf(a.Stderr, "%s The item was created but could not be probed: %v\n",
 			t.Yellow.Apply(sym.Warn), err)
 		fmt.Fprintf(a.Stderr, "  %s an item that collects nothing never alerts. Fix it or remove it.\n",
 			t.Dim.Apply("why it matters:"))
@@ -529,8 +529,8 @@ func (a *App) verifyCreatedItem(id string) {
 	// Report the server's reason rather than assuming it was the data source:
 	// an item with no host to run against is refused the same way, and calling
 	// that "no mapping stages to preview" would be a plain lie. Say which check
-	// ran either way, because a test proves less than a dry run does.
-	fmt.Fprintf(a.Stderr, "  %s the dry run was refused, so the item was tested instead.\n",
+	// ran either way, because a test proves less than a probe does.
+	fmt.Fprintf(a.Stderr, "  %s the probe was refused, so the item was tested instead.\n",
 		t.Dim.Apply("note:"))
 	fmt.Fprintf(a.Stderr, "        A test stops at the raw response and cannot confirm it collects data.\n")
 	fmt.Fprintf(a.Stderr, "  %s %v\n", t.Dim.Apply("refused because:"), err)
@@ -676,8 +676,8 @@ func newMonHostsCmd(app *App) *cobra.Command {
 
 // itemUpdateKeys are the fields 'item update' will write from --from-file.
 //
-// Deliberately the dry-run override set plus the plain descriptive fields: a
-// config proved with 'dry-run --from-file' is then saved with the same file,
+// Deliberately the probe override set plus the plain descriptive fields: a
+// config proved with 'probe --from-file' is then saved with the same file,
 // with nothing retyped in between and nothing able to drift.
 var itemUpdateKeys = map[string]bool{
 	"host": true, "host_specific_api_call": true, "mapping_rules": true,
@@ -697,22 +697,22 @@ func newMonItemUpdateCmd(app *App) *cobra.Command {
 		Short: "Change a monitoring item's configuration",
 		Long: `Change a monitoring item's configuration and re-check it.
 
-This is the save half of the dry-run loop. 'dry-run --from-file' applies a
+This is the save half of the probe loop. 'probe --from-file' applies a
 candidate config in memory and shows what it would collect; this writes the
 same file to the item, so what was proved is what gets stored:
 
-    ups monitoring item dry-run 412 --from-file config.json   # until it collects
-    ups monitoring item update  412 --from-file config.json   # then save it
+    ups monitoring item probe  412 --from-file config.json   # until it collects
+    ups monitoring item update 412 --from-file config.json   # then save it
 
---from-file accepts the same keys as the dry run - parameters, mapping_rules,
+--from-file accepts the same keys as the probe - parameters, mapping_rules,
 response_root_path, host_specific_api_call, timeout, host - plus name,
 description, interval, credential, credential_type and monitoring_module. Any
 other key is refused rather than dropped, because a dropped field reads back
 as saved when nothing saved it.
 
-Every edit invalidates the dry run that confirmed the item: the config status
-returns to INCOMPLETE and stays there until a new dry run passes. So this
-dry-runs the item afterwards unless --skip-test.`,
+Every edit invalidates the probe that confirmed the item: the config status
+returns to INCOMPLETE and stays there until a new probe passes. So this
+probes the item afterwards unless --skip-test.`,
 		Example: `  ups monitoring item update 412 --from-file config.json
   ups monitoring item update 412 --response-root-path '$.data.items'
   ups monitoring item update 412 --params '{"oid":"1.3.6.1.4.1.9.9.109.1.1.1.1.8"}'`,
@@ -762,7 +762,7 @@ dry-runs the item afterwards unless --skip-test.`,
 			if _, ok := body["host"]; ok {
 				// Repointing an item is not an edit of the same check: the
 				// confirmation it carried was against the old device.
-				fmt.Fprintf(app.Stderr, "  %s repointing the item at another host discards the dry run that confirmed it.\n",
+				fmt.Fprintf(app.Stderr, "  %s repointing the item at another host discards the probe that confirmed it.\n",
 					app.Theme().Dim.Apply("note:"))
 			}
 
@@ -775,7 +775,7 @@ dry-runs the item afterwards unless --skip-test.`,
 			t := app.Theme()
 			fmt.Fprintf(app.Stderr, "%s Updated monitoring item %s\n", t.Green.Apply(app.Sym().OK), args[0])
 			if skipTest {
-				fmt.Fprintf(app.Stderr, "  %s the config status is now INCOMPLETE: ups monitoring item dry-run %s\n",
+				fmt.Fprintf(app.Stderr, "  %s the config status is now INCOMPLETE: ups monitoring item probe %s\n",
 					t.Yellow.Apply(app.Sym().Warn), args[0])
 				return nil
 			}
@@ -783,7 +783,7 @@ dry-runs the item afterwards unless --skip-test.`,
 			return nil
 		},
 	}
-	c.Flags().StringVar(&fromFile, "from-file", "", "JSON config to save, in the same shape 'dry-run --from-file' takes")
+	c.Flags().StringVar(&fromFile, "from-file", "", "JSON config to save, in the same shape 'probe --from-file' takes")
 	c.Flags().StringVar(&name, "name", "", "new name")
 	c.Flags().StringVar(&description, "description", "", "new description")
 	c.Flags().StringVar(&params, "params", "", "module parameters")
@@ -797,7 +797,7 @@ dry-runs the item afterwards unless --skip-test.`,
 	c.Flags().StringVar(&interval, "interval", "", "how often to poll, e.g. 5m or 1h: ups monitoring interval list")
 	c.Flags().IntVar(&timeout, "timeout", 0, "per-poll timeout in seconds")
 	c.Flags().BoolVar(&hostSpecific, "host-specific-api-call", false, "the API is called once per host rather than once for all")
-	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not dry-run the item after saving")
+	c.Flags().BoolVar(&skipTest, "skip-test", false, "do not probe the item after saving")
 	return c
 }
 

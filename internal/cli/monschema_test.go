@@ -72,7 +72,7 @@ func TestModuleCreateSuggestsAddingItToATemplate(t *testing.T) {
 	contains(t, res.Stderr, "--add-module 21")
 }
 
-func TestItemUpdateSavesTheConfigADryRunProved(t *testing.T) {
+func TestItemUpdateSavesTheConfigAProbeProved(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.stub.handleMethod("GET", "/api/monitoring/items/412/", 200, map[string]any{"id": 412, "parameters": "{}", "description": ""})
@@ -98,7 +98,7 @@ func TestItemUpdateSavesTheConfigADryRunProved(t *testing.T) {
 	if got[0].Body["response_root_path"] != "$.data" {
 		t.Errorf("config was not saved: %v", got[0].Body)
 	}
-	// The saved config is no longer the one a dry run confirmed.
+	// The saved config is no longer the one a probe confirmed.
 	contains(t, res.Stderr, "INCOMPLETE")
 }
 
@@ -128,19 +128,19 @@ func TestItemUpdateRefusesFieldsItWillNotWrite(t *testing.T) {
 	}
 }
 
-func TestItemUpdateDryRunsAfterSaving(t *testing.T) {
+func TestItemUpdateProbesAfterSaving(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.stub.handleMethod("GET", "/api/monitoring/items/412/", 200, map[string]any{"id": 412, "parameters": "{}", "description": ""})
 	e.stub.handleMethod("PATCH", "/api/monitoring/items/412/", 200, map[string]any{"id": 412})
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
 
 	res := e.run("monitoring", "item", "update", "412", "--response-root-path", "$.data")
 	if res.ExitCode != 0 {
 		t.Fatalf("update failed: %s", res.Stderr)
 	}
-	if len(e.stub.requestsTo("POST", dryRunsPath)) != 1 {
+	if len(e.stub.requestsTo("POST", probesPath)) != 1 {
 		t.Error("an edited item must be re-checked, not assumed to still work")
 	}
 }

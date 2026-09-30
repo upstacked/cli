@@ -14,7 +14,7 @@ const actionsPath = "/api/monitoring/actions/"
 // newMonActionCmd lists the data sources an item can be built on.
 //
 // The field is called action_type on the wire and data_source in the item
-// list's query parameters, and the dry run reports it under a third set of
+// list's query parameters, and the probe reports it under a third set of
 // worker names. Whatever it is called, it is the thing that decides whether a
 // check speaks SNMP, HTTP or ICMP, and an item without one polls nothing.
 func newMonActionCmd(app *App) *cobra.Command {
@@ -54,7 +54,7 @@ between two.`,
 }
 
 // dataSourceIDs are the item data sources the platform is built around now:
-// the monitoring engine's item-level pipelines, and the only sources a dry run
+// the monitoring engine's item-level pipelines, and the only sources a probe
 // can execute. action_type is the older model; the server derives it from the
 // data source, so these are written as data_source and nothing else.
 var dataSourceIDs = map[string]int{"api": 1, "snmp": 2, "icmp": 3}

@@ -13,46 +13,46 @@ import (
 )
 
 const (
-	dryRunsPath = "/api/monitoring/item/dry-runs/"
+	probesPath = "/api/monitoring/item/dry-runs/"
 
-	dryRunPending = "pending"
+	probePending = "pending"
 	// The run happens on the customer's monitoring agent, which polls for
 	// queued work every few seconds, so nothing is ever instant here.
-	dryRunPollInterval = 2 * time.Second
-	dryRunWait         = 60 * time.Second
+	probePollInterval = 2 * time.Second
+	probeWait         = 60 * time.Second
 	// The server gives up on a run nobody reported after two minutes, and only
 	// notices when the record is read. Waiting past that re-reads a record that
 	// will never change again.
-	dryRunServerTimeout = 2 * time.Minute
+	probeServerTimeout = 2 * time.Minute
 )
 
-// dryRunOverrideKeys are the config fields a dry run applies in memory.
+// probeOverrideKeys are the config fields a probe applies in memory.
 //
 // Anything else is rejected rather than quietly dropped: a key the server
 // ignores reads back as "that override was checked" when nothing checked it,
 // which is the failure this command exists to prevent.
-var dryRunOverrideKeys = []string{
+var probeOverrideKeys = []string{
 	"host", "host_specific_api_call", "mapping_rules", "parameters",
 	"response_root_path", "schema_mapping", "timeout",
 }
 
-// dryRunStages are the pipeline stages a trace reports, in execution order.
-var dryRunStages = []struct{ key, label string }{
+// probeStages are the pipeline stages a trace reports, in execution order.
+var probeStages = []struct{ key, label string }{
 	{"request_status", "fetch"},
 	{"host_mapping_status", "host mapping"},
 	{"schema_mapping_status", "schema mapping"},
 }
 
-func newMonItemDryRunCmd(app *App) *cobra.Command {
+func newMonItemProbeCmd(app *App) *cobra.Command {
 	var host, fromFile string
 	var wait time.Duration
 
 	c := &cobra.Command{
-		Use:   "dry-run <item-id>",
+		Use:   "probe <item-id>",
 		Short: "Run a monitoring item's config once and show what it would collect",
 		Long: `Execute a monitoring item's configuration once, publishing nothing.
 
-A dry run runs the real pipeline - fetch, host mapping, schema mapping, alert
+A probe runs the real pipeline - fetch, host mapping, schema mapping, alert
 evaluation - with the writing ends replaced by ones that record instead of
 publish. Nothing reaches Elasticsearch and no alert is raised. What comes back
 is the data the config would have produced, in the shape real monitoring data
@@ -76,13 +76,13 @@ else is refused, and 'ups monitoring item test' is the check that still applies.
 The run is dispatched to the monitoring agent and handed out exactly once, so
 this polls for the outcome. A run that stays pending is not retried by reading
 it again - queue a new one.`,
-		Example: `  ups monitoring item dry-run 412
-  ups monitoring item dry-run 412 --host 88
-  ups monitoring item dry-run 412 --from-file config.json
-  ups monitoring item dry-run 412 --wait 0`,
+		Example: `  ups monitoring item probe 412
+  ups monitoring item probe 412 --host 88
+  ups monitoring item probe 412 --from-file config.json
+  ups monitoring item probe 412 --wait 0`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			m, raw, err := app.dryRunItem(args[0], host, fromFile, wait)
+			m, raw, err := app.probeItem(args[0], host, fromFile, wait)
 			if err != nil {
 				return err
 			}
@@ -94,53 +94,62 @@ it again - queue a new one.`,
 				// only the call site knows whether nobody waited or whether the
 				// agent is late. Those need different advice.
 				t := app.Theme()
-				fmt.Fprintf(app.Stderr, "%s Dry run %s queued. Nothing was published.\n",
+				fmt.Fprintf(app.Stderr, "%s Probe %s queued. Nothing was published.\n",
 					t.Green.Apply(app.Sym().OK), dash(str(m, "id")))
-				fmt.Fprintf(app.Stderr, "  %s ups monitoring item dry-run show %s\n",
+				fmt.Fprintf(app.Stderr, "  %s ups monitoring item probe show %s\n",
 					t.Dim.Apply("read it later:"), dash(str(m, "id")))
 				return nil
 			}
-			return app.reportDryRun(m, raw)
+			return app.reportProbe(m, raw)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "run against this host (defaults to the item's test host, then its host)")
 	c.Flags().StringVar(&fromFile, "from-file", "", "JSON file of config overrides to apply in memory, never saved")
-	c.Flags().DurationVar(&wait, "wait", dryRunWait,
+	c.Flags().DurationVar(&wait, "wait", probeWait,
 		"how long to wait for the result (0 returns once the run is queued)")
-	c.AddCommand(newMonItemDryRunShowCmd(app))
+	c.AddCommand(newMonItemProbeShowCmd(app))
 	return c
 }
 
-func newMonItemDryRunShowCmd(app *App) *cobra.Command {
+// newMonItemDryRunCmd keeps the command's old name working for scripts and
+// skills installed before the rename. Deprecated hides it from help.
+func newMonItemDryRunCmd(app *App) *cobra.Command {
+	c := newMonItemProbeCmd(app)
+	c.Use = "dry-run <item-id>"
+	c.Deprecated = "use 'ups monitoring item probe' instead"
+	return c
+}
+
+func newMonItemProbeShowCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <run-id>",
-		Short: "Read back a dry run queued earlier",
-		Long: `Show the record of one dry run.
+		Short: "Read back a probe queued earlier",
+		Long: `Show the record of one probe.
 
-This is how to collect the outcome after 'ups monitoring item dry-run --wait 0'.
+This is how to collect the outcome after 'ups monitoring item probe --wait 0'.
 Reading a run never re-dispatches it: a run is handed to an agent once, and one
 that is still pending two minutes after it was queued is flipped to failed when
 it is read. To try again, queue a new run.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			m, raw, err := app.getOne(dryRunsPath+args[0]+"/", nil)
+			m, raw, err := app.getOne(probesPath+args[0]+"/", nil)
 			if err != nil {
 				return err
 			}
-			return app.reportDryRun(m, raw)
+			return app.reportProbe(m, raw)
 		},
 	}
 }
 
-// dryRunItem queues a dry run and waits for the agent to report on it.
+// probeItem queues a probe and waits for the agent to report on it.
 //
 // The 201 only means the run was queued, so reporting on it alone would report
 // "checked" for a config that later collected nothing - the exact confusion
 // this command exists to remove.
-func (a *App) dryRunItem(itemID, host, fromFile string, wait time.Duration) (row, jsonRaw, error) {
+func (a *App) probeItem(itemID, host, fromFile string, wait time.Duration) (row, jsonRaw, error) {
 	body := map[string]any{"monitoring_item": atoiOr(itemID)}
 	if fromFile != "" {
-		over, err := readDryRunOverrides(fromFile)
+		over, err := readProbeOverrides(fromFile)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -155,11 +164,11 @@ func (a *App) dryRunItem(itemID, host, fromFile string, wait time.Duration) (row
 	}
 
 	var dispatch jsonRaw
-	err := a.Spin("Queueing a dry run of monitoring item "+itemID, func() error {
-		return a.mutate("POST", dryRunsPath, body, &dispatch)
+	err := a.Spin("Queueing a probe of monitoring item "+itemID, func() error {
+		return a.mutate("POST", probesPath, body, &dispatch)
 	})
 	if err != nil {
-		return nil, nil, describeDryRunFailure(err, itemID)
+		return nil, nil, describeProbeFailure(err, itemID)
 	}
 	if a.DryRun {
 		return nil, nil, nil
@@ -171,17 +180,17 @@ func (a *App) dryRunItem(itemID, host, fromFile string, wait time.Duration) (row
 	if wait <= 0 || runID == "" {
 		return m, dispatch, nil
 	}
-	if wait > dryRunServerTimeout {
-		wait = dryRunServerTimeout
+	if wait > probeServerTimeout {
+		wait = probeServerTimeout
 	}
-	return a.awaitDryRun(runID, wait, m, dispatch)
+	return a.awaitProbe(runID, wait, m, dispatch)
 }
 
-// awaitDryRun polls until the run leaves pending or the wait runs out. The last
+// awaitProbe polls until the run leaves pending or the wait runs out. The last
 // record read is returned either way, so a caller always reports on something
 // the server actually said.
-func (a *App) awaitDryRun(runID string, wait time.Duration, last row, lastRaw jsonRaw) (row, jsonRaw, error) {
-	path := dryRunsPath + runID + "/"
+func (a *App) awaitProbe(runID string, wait time.Duration, last row, lastRaw jsonRaw) (row, jsonRaw, error) {
+	path := probesPath + runID + "/"
 	deadline := time.Now().Add(wait)
 	err := a.Spin("Waiting for the monitoring agent", func() error {
 		for {
@@ -190,13 +199,13 @@ func (a *App) awaitDryRun(runID string, wait time.Duration, last row, lastRaw js
 				return err
 			}
 			last, lastRaw = got, raw
-			if str(got, "status") != dryRunPending {
+			if str(got, "status") != probePending {
 				return nil
 			}
 			if time.Now().After(deadline) {
 				return nil
 			}
-			time.Sleep(dryRunPollInterval)
+			time.Sleep(probePollInterval)
 		}
 	})
 	if err != nil {
@@ -205,8 +214,8 @@ func (a *App) awaitDryRun(runID string, wait time.Duration, last row, lastRaw js
 	return last, lastRaw, nil
 }
 
-// readDryRunOverrides loads the in-memory config overrides for a run.
-func readDryRunOverrides(path string) (map[string]any, error) {
+// readProbeOverrides loads the in-memory config overrides for a run.
+func readProbeOverrides(path string) (map[string]any, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errs.Usage("cannot read %s: %v", path, err)
@@ -218,7 +227,7 @@ func readDryRunOverrides(path string) (map[string]any, error) {
 			Wrapping(err)
 	}
 	allowed := map[string]bool{}
-	for _, k := range dryRunOverrideKeys {
+	for _, k := range probeOverrideKeys {
 		allowed[k] = true
 	}
 	var bad []string
@@ -229,18 +238,18 @@ func readDryRunOverrides(path string) (map[string]any, error) {
 	}
 	if len(bad) > 0 {
 		sort.Strings(bad)
-		return nil, errs.Usage("%s sets fields a dry run cannot override: %s", path, strings.Join(bad, ", ")).
+		return nil, errs.Usage("%s sets fields a probe cannot override: %s", path, strings.Join(bad, ", ")).
 			WithHint("overridable fields are %s. The item id is the positional argument, not a field",
-				strings.Join(dryRunOverrideKeys, ", "))
+				strings.Join(probeOverrideKeys, ", "))
 	}
 	return over, nil
 }
 
-// describeDryRunFailure adds the context the generic HTTP mapping cannot know.
-func describeDryRunFailure(err error, itemID string) error {
+// describeProbeFailure adds the context the generic HTTP mapping cannot know.
+func describeProbeFailure(err error, itemID string) error {
 	switch errs.StatusOf(err) {
 	case http.StatusBadRequest:
-		e := errs.Usage("cannot dry-run monitoring item %s: %v", itemID, err).
+		e := errs.Usage("cannot probe monitoring item %s: %v", itemID, err).
 			WithStatus(http.StatusBadRequest)
 		// The server's own message is already in there and says why. Adding the
 		// data-source hint to every 400 would send a caller whose item simply
@@ -256,7 +265,7 @@ func describeDryRunFailure(err error, itemID string) error {
 		}
 		return e
 	case http.StatusForbidden:
-		return errs.Auth("cannot dry-run monitoring item %s: %v", itemID, err).
+		return errs.Auth("cannot probe monitoring item %s: %v", itemID, err).
 			WithHint("the item's organization may be outside your scope. "+
 				"Compare 'ups monitoring item show %s' with 'ups whoami'", itemID).
 			WithStatus(http.StatusForbidden)
@@ -265,7 +274,7 @@ func describeDryRunFailure(err error, itemID string) error {
 }
 
 // mentionsDataSource reports whether a rejection was about the item's data
-// source rather than one of the other things a dry run can refuse.
+// source rather than one of the other things a probe can refuse.
 func mentionsDataSource(msg string) bool {
 	msg = strings.ToLower(msg)
 	for _, w := range []string{"data source", "data_source", "api_data", "snmpstd", "icmp"} {
@@ -278,9 +287,9 @@ func mentionsDataSource(msg string) bool {
 
 // --- reporting -----------------------------------------------------------
 
-// reportDryRun prints the trace and the data points, and fails the command when
+// reportProbe prints the trace and the data points, and fails the command when
 // the configuration would not have collected anything, so a script notices.
-func (a *App) reportDryRun(m row, raw jsonRaw) error {
+func (a *App) reportProbe(m row, raw jsonRaw) error {
 	t, sym := a.Theme(), a.Sym()
 
 	// A caller reading JSON gets the record itself, errors and all, rather than
@@ -304,33 +313,33 @@ func (a *App) reportDryRun(m row, raw jsonRaw) error {
 	// config for an infrastructure outage, and sends someone to delete a check
 	// that was never tested. Confirmed against a live server: a run nobody
 	// reports on is flipped to failed on read, with error set and trace null.
-	if status == "failed" && !dryRunExecuted(trace) {
-		fmt.Fprintf(a.Stderr, "%s Dry run %s never ran.\n", t.Red.Apply(sym.Fail), runID)
+	if status == "failed" && !probeExecuted(trace) {
+		fmt.Fprintf(a.Stderr, "%s Probe %s never ran.\n", t.Red.Apply(sym.Fail), runID)
 		if e := str(m, "error"); e != "" {
 			fmt.Fprintf(a.Stderr, "  %s %s\n", t.Dim.Apply("agent reported:"), e)
 		}
-		return errs.General("dry run %s did not execute", runID).
+		return errs.General("probe %s did not execute", runID).
 			WithHint("nothing was checked, so this says nothing about the item's config. " +
 				"Confirm the infrastructure's monitoring agent is online, then queue a new run")
 	}
 
 	switch status {
 	case "success":
-		fmt.Fprintf(a.Stderr, "%s Dry run %s succeeded. Nothing was published.\n",
+		fmt.Fprintf(a.Stderr, "%s Probe %s succeeded. Nothing was published.\n",
 			t.Green.Apply(sym.OK), runID)
 	case "partial":
-		fmt.Fprintf(a.Stderr, "%s Dry run %s mapped only part of what it fetched.\n",
+		fmt.Fprintf(a.Stderr, "%s Probe %s mapped only part of what it fetched.\n",
 			t.Yellow.Apply(sym.Warn), runID)
 	case "failed":
 		where := ""
 		if failed != "" {
 			where = " at " + failed
 		}
-		fmt.Fprintf(a.Stderr, "%s Dry run %s failed%s.\n", t.Red.Apply(sym.Fail), runID, where)
-	case dryRunPending:
-		fmt.Fprintf(a.Stderr, "%s Dry run %s is still queued. The agent has not reported back.\n",
+		fmt.Fprintf(a.Stderr, "%s Probe %s failed%s.\n", t.Red.Apply(sym.Fail), runID, where)
+	case probePending:
+		fmt.Fprintf(a.Stderr, "%s Probe %s is still queued. The agent has not reported back.\n",
 			t.Yellow.Apply(sym.Warn), runID)
-		fmt.Fprintf(a.Stderr, "  %s ups monitoring item dry-run show %s\n", t.Dim.Apply("read it later:"), runID)
+		fmt.Fprintf(a.Stderr, "  %s ups monitoring item probe show %s\n", t.Dim.Apply("read it later:"), runID)
 		fmt.Fprintf(a.Stderr, "  %s a run is handed to an agent once. Reading it again does not re-dispatch it,\n",
 			t.Dim.Apply("note:"))
 		fmt.Fprintf(a.Stderr, "        and one still pending after 2 minutes is failed. Queue a new run instead.\n")
@@ -344,11 +353,11 @@ func (a *App) reportDryRun(m row, raw jsonRaw) error {
 	}
 
 	if !a.AsJSON {
-		a.printDryRunTrace(trace)
-		a.printDryRunPoints(points)
-		a.printDryRunAlerts(listField(m, "alerts"))
+		a.printProbeTrace(trace)
+		a.printProbePoints(points)
+		a.printProbeAlerts(listField(m, "alerts"))
 	}
-	a.warnDryRunTruncation(trace)
+	a.warnProbeTruncation(trace)
 
 	// The command fails on the outcome the whole feature exists to catch: a
 	// config that would publish nothing. The header above already said where,
@@ -359,11 +368,11 @@ func (a *App) reportDryRun(m row, raw jsonRaw) error {
 		if failed != "" {
 			where = "it failed at " + failed
 		}
-		return errs.General("dry run %s collected nothing", runID).
+		return errs.General("probe %s collected nothing", runID).
 			WithHint("%s. An item that collects nothing never alerts - fix the config or remove the item", where)
 	case "success", "partial":
 		if len(points) == 0 {
-			return errs.General("dry run %s collected nothing", runID).
+			return errs.General("probe %s collected nothing", runID).
 				WithHint("every stage ran, but nothing would have been published. " +
 					"An item that collects nothing never alerts")
 		}
@@ -371,10 +380,10 @@ func (a *App) reportDryRun(m row, raw jsonRaw) error {
 	return nil
 }
 
-// dryRunExecuted reports whether any pipeline stage actually ran. It is what
+// probeExecuted reports whether any pipeline stage actually ran. It is what
 // separates "the config collects nothing" from "the config was never tried".
-func dryRunExecuted(trace row) bool {
-	for _, st := range dryRunStages {
+func probeExecuted(trace row) bool {
+	for _, st := range probeStages {
 		if objField(trace, st.key) != nil {
 			return true
 		}
@@ -386,7 +395,7 @@ func dryRunExecuted(trace row) bool {
 // where the operator has to look. A later stage failing because an earlier one
 // produced nothing is a consequence, not the cause.
 func firstFailedStage(trace row) string {
-	for _, st := range dryRunStages {
+	for _, st := range probeStages {
 		s := objField(trace, st.key)
 		if s == nil {
 			continue
@@ -398,25 +407,25 @@ func firstFailedStage(trace row) string {
 	return ""
 }
 
-func (a *App) printDryRunTrace(trace row) {
+func (a *App) printProbeTrace(trace row) {
 	if trace == nil {
 		return
 	}
 	t := a.Theme()
 	out := a.Stdout
 	fmt.Fprintf(out, "%s\n", t.Bold.Apply("Stages"))
-	for _, st := range dryRunStages {
+	for _, st := range probeStages {
 		s := objField(trace, st.key)
 		if s == nil {
 			fmt.Fprintf(out, "  %-15s %s\n", st.label, t.Dim.Apply("not run"))
 			continue
 		}
 		status := str(s, "status")
-		fmt.Fprintf(out, "  %-15s %-9s %s\n", st.label, status, dryRunStageSummary(st.key, s))
+		fmt.Fprintf(out, "  %-15s %-9s %s\n", st.label, status, probeStageSummary(st.key, s))
 		if status == "success" {
 			continue
 		}
-		for _, line := range dryRunStageDetails(st.key, s) {
+		for _, line := range probeStageDetails(st.key, s) {
 			fmt.Fprintf(out, "      %s\n", line)
 		}
 	}
@@ -430,8 +439,8 @@ func (a *App) printDryRunTrace(trace row) {
 	fmt.Fprintln(out)
 }
 
-// dryRunStageSummary is the one-line "what happened" for a stage.
-func dryRunStageSummary(key string, s row) string {
+// probeStageSummary is the one-line "what happened" for a stage.
+func probeStageSummary(key string, s row) string {
 	details := objField(s, "details")
 	switch key {
 	case "request_status":
@@ -446,14 +455,14 @@ func dryRunStageSummary(key string, s row) string {
 	return truncate(str(details, "message"), 70)
 }
 
-// dryRunStageDetails is what an operator needs to fix the stage.
-func dryRunStageDetails(key string, s row) []string {
+// probeStageDetails is what an operator needs to fix the stage.
+func probeStageDetails(key string, s row) []string {
 	details := objField(s, "details")
 	if details == nil {
 		return nil
 	}
 	var out []string
-	if msg := str(details, "message"); msg != "" && dryRunStageSummary(key, s) != truncate(msg, 70) {
+	if msg := str(details, "message"); msg != "" && probeStageSummary(key, s) != truncate(msg, 70) {
 		out = append(out, msg)
 	}
 	switch key {
@@ -478,7 +487,7 @@ func dryRunStageDetails(key string, s row) []string {
 	return out
 }
 
-func (a *App) printDryRunPoints(points []row) {
+func (a *App) printProbePoints(points []row) {
 	t := a.Theme()
 	out := a.Stdout
 	if len(points) == 0 {
@@ -496,12 +505,12 @@ func (a *App) printDryRunPoints(points []row) {
 		fmt.Fprintf(out, "  %s  %s  %s  %s\n",
 			dash(str(p, "@timestamp", "timestamp")), where,
 			dash(str(extra, "schema_name", "schema_id")),
-			dryRunValues(objField(extra, "value")))
+			probeValues(objField(extra, "value")))
 	}
 	fmt.Fprintln(out)
 }
 
-func (a *App) printDryRunAlerts(alerts []row) {
+func (a *App) printProbeAlerts(alerts []row) {
 	if len(alerts) == 0 {
 		return
 	}
@@ -516,14 +525,14 @@ func (a *App) printDryRunAlerts(alerts []row) {
 		fmt.Fprintf(out, "  %s  %s  %s  %s  %s\n",
 			dash(str(al, "host_name", "host_id")), dash(str(al, "identifier")),
 			dash(str(al, "monitoring_item")), kind,
-			dryRunValues(objField(al, "payload")))
+			probeValues(objField(al, "payload")))
 	}
 	fmt.Fprintln(out)
 }
 
-// warnDryRunTruncation makes a capped preview impossible to mistake for a
+// warnProbeTruncation makes a capped preview impossible to mistake for a
 // complete one, the same rule the list commands follow.
-func (a *App) warnDryRunTruncation(trace row) {
+func (a *App) warnProbeTruncation(trace row) {
 	if trace == nil {
 		return
 	}
@@ -538,9 +547,9 @@ func (a *App) warnDryRunTruncation(trace row) {
 	}
 }
 
-// dryRunValues renders a data point's value map. The engine JSON-encodes every
+// probeValues renders a data point's value map. The engine JSON-encodes every
 // value, so `"up"` arrives as a quoted string; it is decoded back for display.
-func dryRunValues(v row) string {
+func probeValues(v row) string {
 	if len(v) == 0 {
 		return "-"
 	}

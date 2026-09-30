@@ -198,21 +198,21 @@ func TestMappingDeleteNamesTheFieldsItStopsCollecting(t *testing.T) {
 }
 
 // The whole point of a mapping is that it may be valid and still resolve to
-// nothing, so writing one re-runs the item's dry run.
-func TestMappingCreateDryRunsTheItemAfterwards(t *testing.T) {
+// nothing, so writing one re-runs the item's probe.
+func TestMappingCreateProbesTheItemAfterwards(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.stub.handleMethod("POST", mappingsPath, 201, map[string]any{"id": 91})
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
 
 	res := e.run("monitoring", "item", "mapping", "create",
 		"--item", "412", "--schema", "7", "--field", "in_octets=$.x")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
-	if len(e.stub.requestsTo("POST", dryRunsPath)) != 1 {
-		t.Error("a new mapping must be dry-run, not assumed to work")
+	if len(e.stub.requestsTo("POST", probesPath)) != 1 {
+		t.Error("a new mapping must be probed, not assumed to work")
 	}
 	contains(t, res.Stderr, "Nothing was published")
 }
@@ -291,7 +291,7 @@ func TestMappingOnAHostlessItemSaysHowToGiveItADevice(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.stub.handleMethod("POST", mappingsPath, 201, map[string]any{"id": 91})
-	e.stub.handleMethod("POST", dryRunsPath, 400, map[string]any{
+	e.stub.handleMethod("POST", probesPath, 400, map[string]any{
 		"error": "This monitoring item has no host to run against. Attach it to a host, set a test host, or name one in the request.",
 	})
 

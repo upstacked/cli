@@ -120,9 +120,9 @@ u monitoring item mapping create --item "$item" --schema "$SNMP_SCHEMA" \
 check "multi-valued mapping created with the value mapping attached" \
   '.id != null and ([.field_mappings[] | select(.key == "oper__status") | .value_mapping] | .[0] != null)' "$work/map.json"
 
-u monitoring item dry-run "$item" --host "$SNMP_HOST" --json >"$work/dry.json" 2>"$work/dry.err"
-check "dry run on the device succeeds" '.status == "success"' "$work/dry.json"
-check "dry run maps a row per interface with a status" \
+u monitoring item probe "$item" --host "$SNMP_HOST" --json >"$work/dry.json" 2>"$work/dry.err"
+check "probe on the device succeeds" '.status == "success"' "$work/dry.json"
+check "probe maps a row per interface with a status" \
   '(.data_points | length) > 1 and all(.data_points[]; .extra.value.oper__status != null)' "$work/dry.json"
 
 u monitoring template update "$tpl" --publish >/dev/null 2>&1
@@ -149,7 +149,7 @@ item=$(u monitoring item create --template "$tpl" --module "$mod" --test-host "$
 
 # One document per device or one for many is read off the response, as in the
 # portal's scan step, not known up front.
-u monitoring item dry-run "$item" --host "$API_HOST" --json >"$work/fetch.json" 2>/dev/null
+u monitoring item probe "$item" --host "$API_HOST" --json >"$work/fetch.json" 2>/dev/null
 check "the device answers the call" '(.trace.request_status.status // "failed") != "failed"' "$work/fetch.json"
 printf '{"host_specific_api_call": true, "response_root_path": "$"}' >"$work/cfg.json"
 u monitoring item update "$item" --from-file "$work/cfg.json" --skip-test >/dev/null 2>"$work/upd.err" ||
@@ -170,9 +170,9 @@ u monitoring item mapping create --item "$item" --schema "$API_SCHEMA" \
 check "multi-valued mapping created with both value mappings attached" \
   '.id != null and ([.field_mappings[] | select(.value_mapping != null)] | length == 2)' "$work/map.json"
 
-u monitoring item dry-run "$item" --host "$API_HOST" --json >"$work/dry.json" 2>"$work/dry.err"
-check "dry run on the device succeeds" '.status == "success"' "$work/dry.json"
-check "dry run maps a row per port with a status" \
+u monitoring item probe "$item" --host "$API_HOST" --json >"$work/dry.json" 2>"$work/dry.err"
+check "probe on the device succeeds" '.status == "success"' "$work/dry.json"
+check "probe maps a row per port with a status" \
   '(.data_points | length) > 1 and all(.data_points[]; .extra.value.oper__status != null)' "$work/dry.json"
 
 u monitoring template update "$tpl" --publish >/dev/null 2>&1

@@ -178,27 +178,27 @@ func TestDryRunPerformsNoWrite(t *testing.T) {
 }
 
 // A monitoring item that silently collects nothing is the worst failure mode,
-// so creation dry-runs the item unless explicitly told not to. A dry run, not
+// so creation probes the item unless explicitly told not to. A probe, not
 // a test: the test stops at the raw response and cannot say whether the config
 // produces data.
-func TestMonitoringItemCreateDryRunsTheNewItem(t *testing.T) {
+func TestMonitoringItemCreateProbesTheNewItem(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.org("3")
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
-	e.stub.handleMethod("POST", dryRunsPath, 201, map[string]any{"id": 17, "status": "pending"})
-	e.stub.handleMethod("GET", dryRunsPath+"17/", 200, dryRunRecord("success", nil))
+	e.stub.handleMethod("POST", probesPath, 201, map[string]any{"id": 17, "status": "pending"})
+	e.stub.handleMethod("GET", probesPath+"17/", 200, probeRecord("success", nil))
 
 	res := e.run("monitoring", "item", "create", "--interval", "1", "--data-source", "2", "--host", "7", "--name", "CPU", "--module", "3")
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
-	contains(t, res.Stderr, "Dry run 17 succeeded")
-	if got := e.stub.requestsTo("POST", dryRunsPath); len(got) != 1 {
-		t.Fatalf("a newly created monitoring item should be dry-run automatically, got %d", len(got))
+	contains(t, res.Stderr, "Probe 17 succeeded")
+	if got := e.stub.requestsTo("POST", probesPath); len(got) != 1 {
+		t.Fatalf("a newly created monitoring item should be probed automatically, got %d", len(got))
 	}
 	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 0 {
-		t.Error("the weaker test endpoint must not be used when a dry run works")
+		t.Error("the weaker test endpoint must not be used when a probe works")
 	}
 	// The API rejects a create with no organization, host-bound or not.
 	got := e.stub.requestsTo("POST", "/api/monitoring/items/")
@@ -210,12 +210,12 @@ func TestMonitoringItemCreateDryRunsTheNewItem(t *testing.T) {
 // Only three data sources have mapping stages to preview. The rest are refused,
 // and falling back to the weaker check beats leaving the item unverified - so
 // long as the user is told which check actually ran.
-func TestMonitoringItemCreateFallsBackToTestWhenDryRunIsRefused(t *testing.T) {
+func TestMonitoringItemCreateFallsBackToTestWhenProbeIsRefused(t *testing.T) {
 	e := newEnv(t)
 	e.login()
 	e.org("3")
 	e.stub.handleMethod("POST", "/api/monitoring/items/", 201, map[string]any{"id": 55, "name": "CPU"})
-	e.stub.handleMethod("POST", dryRunsPath, 400, map[string]any{
+	e.stub.handleMethod("POST", probesPath, 400, map[string]any{
 		"detail": "Dry runs are only supported for api_data, snmpstd and icmp",
 	})
 	e.stub.handleMethod("POST", "/api/monitoring/item/55/test", 201, map[string]any{
@@ -230,9 +230,9 @@ func TestMonitoringItemCreateFallsBackToTestWhenDryRunIsRefused(t *testing.T) {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
 	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 1 {
-		t.Fatal("a refused dry run must fall back to the test endpoint")
+		t.Fatal("a refused probe must fall back to the test endpoint")
 	}
-	contains(t, res.Stderr, "the dry run was refused, so the item was tested instead")
+	contains(t, res.Stderr, "the probe was refused, so the item was tested instead")
 	contains(t, res.Stderr, "only supported for api_data")
 	contains(t, res.Stderr, "Test succeeded")
 }
@@ -247,8 +247,8 @@ func TestMonitoringItemCreateSkipTest(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("create failed: %s", res.Stderr)
 	}
-	if got := e.stub.requestsTo("POST", dryRunsPath); len(got) != 0 {
-		t.Error("--skip-test must suppress the automatic dry run")
+	if got := e.stub.requestsTo("POST", probesPath); len(got) != 0 {
+		t.Error("--skip-test must suppress the automatic probe")
 	}
 	if got := e.stub.requestsTo("POST", "/api/monitoring/item/55/test"); len(got) != 0 {
 		t.Error("--skip-test must not fall back to a test either")
