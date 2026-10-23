@@ -86,10 +86,10 @@ homebrew_casks:
       post:
         # Downloaded binaries are quarantined by Gatekeeper on macOS, which
         # makes the first run fail with an unhelpful dialog.
-        install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr",
-                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/ups"]
+        # Only macOS has /usr/bin/xattr, and the steps DSL takes no conditionals.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/ups"]
           end
 
 release:
