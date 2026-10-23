@@ -161,6 +161,11 @@ func TestSkillExplainsTheReasoning(t *testing.T) {
 		// traffic; a relative view silently shows a different time each time.
 		{"an ambiguous place is refused, not guessed", "refused, not guessed"},
 		{"a saved window is relative", "A view saved with `--window` stays"},
+		// Switching off a sender's alert is coverage loss with no diff to read.
+		{"turning off a sender alert is silent", "a silent device stays silent"},
+		// The legacy agent's empty list reads as "nothing sends".
+		{"an empty senders list on the legacy agent", "does not mean\nnothing sends"},
+		{"a sender fix is not applied", "ups does not apply it"},
 	}
 	for _, r := range required {
 		if !strings.Contains(skill.Content, r.phrase) {

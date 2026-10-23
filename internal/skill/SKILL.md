@@ -981,6 +981,50 @@ server says which windows it accepts. `--start`/`--end` give an explicit range i
 conversations the server returns, busiest first, so an absent conversation may only be
 below the cut: raise `--limit` or narrow with `--query` before concluding it did not happen.
 
+## Senders: is syslog and flow data arriving at all
+
+The `ups senders` commands cover the devices sending syslog or flows to an infrastructure's agents,
+plus every host that is supposed to. It checks whether the data arrives and can be read.
+It does not show what the data says: that is `ups logs search` and `ups flow`. Use it
+before you trust either of those. A device that stopped exporting is missing from every
+flow answer, and nothing in those answers shows it.
+
+```sh
+ups senders list --problems          # worst first: stopped, never seen, bad clock, no template
+ups senders show core-sw-01          # checks, receiving agent + ports, and the fix for its platform
+ups senders alert core-sw-01 --syslog on --flow on
+ups senders alert core-sw-01 --syslog-quiet 4h
+ups senders list --offered           # heard lately, nobody has decided
+ups senders accept                   # alert on for every offered host
+ups senders ignore                   # never alert on, never offer again
+```
+
+`SYSLOG` and `FLOW` show the state, then the alert decision. The state is `arriving`,
+`stopped` (quiet longer than its window) or `never` (nothing in the last week). The
+decision is `alert`, `ignored`, `offered` or `no alert`. An **alert** means a P3 ticket
+opens, and the operation team gets a mail, when the host stays quiet longer than its
+window: 1 hour for syslog and 5 minutes for flows unless `--syslog-quiet`/`--flow-quiet`
+set something else (`default` resets it). An alert changes nothing on the device or the
+agent.
+
+**Turning off an alert that is on means a silent device stays silent**: nothing pages
+anyone when it stops. `alert --syslog off` / `--flow off` on an alert that is on names
+the loss and asks first. `--yes` answers that question without removing it. `ignore`
+acts on every offered host at once and lists them before it writes. Ignored hosts are
+never offered again, so do not run it just to clear the offers. Ask the user which hosts
+matter.
+
+`show` prints a fix: configuration written for the device's platform (Cisco, Juniper,
+Fortinet, …). **It is a suggestion for a live device, and ups does not apply it.** Show it
+to the user and do not paste it into the device yourself.
+
+A sender with no inventory host is listed by its address. Its traffic belongs to no
+device and it cannot carry an alert until a host with that IP exists. An infrastructure
+still on the legacy logging agent lists nothing, because that agent keeps no sender
+addresses. `ups` warns about this on stderr, and **an empty list there does not mean
+nothing sends**. Every command needs an active infrastructure; `--all-infras` widens
+`list`, `show`, `accept` and `ignore` to every infrastructure you can read.
+
 ## Names that look alike but are not
 
 | Looks similar | Actually |
